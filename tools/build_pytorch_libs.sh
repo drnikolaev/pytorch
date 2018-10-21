@@ -196,6 +196,7 @@ function build() {
 		       -DTHCUNN_SO_VERSION=1 \
 		       -DTHD_SO_VERSION=1 \
 		       -DUSE_CUDA=$USE_CUDA \
+		       -DUSE_OPENCV=$USE_OPENCV \
 		       -DBUILD_EXAMPLES=OFF \
 		       -DBUILD_TEST=$BUILD_TEST \
 		       -DNO_NNPACK=$((1-$USE_NNPACK)) \
