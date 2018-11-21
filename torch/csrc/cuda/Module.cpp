@@ -334,7 +334,7 @@ static PyObject * THCPModule_initExtension(PyObject *self)
   THCPCharStorage_postInit(m);
   THCPByteStorage_postInit(m);
 
-  bool has_magma = at::hasMAGMA();
+  bool has_magma = false;//at::hasMAGMA();
   if (has_magma) {
     THCMagma_init(state);
   }
