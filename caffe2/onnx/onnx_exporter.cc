@@ -287,13 +287,13 @@ void OnnxExporter::CopyCaffe2ArgToOnnxAttr(
     AttributeProto* attr,
     const std::string& op_type,
     const caffe2::Argument& arg) {
-  std::string name;
+  std::string name =
+      caffe2::get_default(get_renamed_attrs(), arg.name(), arg.name());
   const auto& per_op_renamed_attr_lut = get_per_op_renamed_attrs();
   const auto it = per_op_renamed_attr_lut.find(op_type);
   if (it != per_op_renamed_attr_lut.end()) {
-    name = caffe2::get_default(it->second, arg.name(), arg.name());
-  } else {
-    name = caffe2::get_default(get_renamed_attrs(), arg.name(), arg.name());
+    // Per-op attribute renames override the global attribute renames
+    name = caffe2::get_default(it->second, arg.name(), name);
   }
   attr->set_name(name);
 
@@ -933,6 +933,8 @@ ConvertedResult OnnxExporter::CreateGemmNodes(
     axis = it->second->i();
   }
   if (x_shape.dims().size() > 2) {
+    std::vector<AttributeProto> xattrs = {MakeAttribute("shape",
+        std::vector<int64_t>(x_shape.dims().cbegin(), x_shape.dims().cend()))};
     // we need to reshape only when dimension is higher than 2
     auto outer = DimProd(x_shape, 0, axis);
     auto inner = DimProd(x_shape, axis, x_shape.dims().size());
@@ -940,7 +942,8 @@ ConvertedResult OnnxExporter::CreateGemmNodes(
     auto reshaped_x = dummy_->NewDummyName();
     const_tensors.emplace_back(CreateOnnxShapeTensor(dummy_, dims));
     nodes.emplace_back(
-        MakeNode("Reshape", {x, const_tensors.back().name()}, {reshaped_x}));
+        MakeNode("Reshape", {x, const_tensors.back().name()}, {reshaped_x},
+            xattrs));
     x = reshaped_x;
   }
 
@@ -962,7 +965,8 @@ ConvertedResult OnnxExporter::CreateGemmNodes(
   }
 
   auto gemm_y_output = (has_axis) ? dummy_->NewDummyName() : y;
-  std::vector<AttributeProto> attrs = {MakeAttribute("transB", 1L)};
+  std::vector<AttributeProto> attrs = {MakeAttribute("transB", 1L),
+                                       MakeAttribute("broadcast", 1L)};
   nodes.emplace_back(MakeNode(
       "Gemm",
       {x, w, b},
@@ -1046,4 +1050,3 @@ void OnnxExporter::InitOpToTensorProto(
 
 } // namespace onnx
 } // namespace caffe2
-
