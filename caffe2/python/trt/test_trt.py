@@ -155,7 +155,7 @@ class TensorRTOpTest(TestCase):
 
     @unittest.skipIf(not workspace.C.use_trt, "No TensortRT support")
     def test_inception_v2(self):
-        self._test_onnx_importer('inception_v2', 0, 9)
+        self._test_onnx_importer('inception_v2', 0, 3)
 
     @unittest.skip('Need to revisit our ChannelShuffle exporter to avoid generating 5D tensor')
     def test_shufflenet(self):
