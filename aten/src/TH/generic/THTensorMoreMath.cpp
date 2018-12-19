@@ -1,5 +1,5 @@
 #ifndef TH_GENERIC_FILE
-#define TH_GENERIC_FILE "generic/THTensorMoreMath.cpp"
+#define TH_GENERIC_FILE "TH/generic/THTensorMoreMath.cpp"
 #else
 
 #include <TH/generic/THTensorApply.hpp>
@@ -2129,27 +2129,6 @@ accreal THTensor_(varall)(THTensor *tensor, int biased)
 accreal THTensor_(stdall)(THTensor *tensor, int biased)
 {
   return sqrt(THTensor_(varall)(tensor, biased));
-}
-
-void THTensor_(linspace)(THTensor *r_, scalar_t a, scalar_t b, int64_t n)
-{
-  scalar_t i = 0;
-
-  THArgCheck((n >= 0), 3, "number of points must be non-negative");
-
-  if (THTensor_(nElement)(r_) != n) {
-    THTensor_(resize1d)(r_, n);
-  }
-
-  if (n == 0) {
-  } else if (n == 1) {
-    THTensor_(set1d)(r_, 0, a);
-  } else {
-     TH_TENSOR_APPLY(scalar_t, r_,
-             *r__data = a + (b-a)/((scalar_t)(n-1))*i;
-             i++;
-           );
-  }
 }
 
 void THTensor_(logspace)(THTensor *r_, scalar_t a, scalar_t b, int64_t n)
