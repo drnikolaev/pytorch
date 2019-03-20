@@ -456,6 +456,37 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
+
+    std::cerr << "self" << std::endl;
+    print(std::cerr, self, 120);
+    std::cerr << self.sizes() << std::endl << std::endl;
+
+    std::cerr << "indices[0]" << std::endl;
+    print(std::cerr, indices[0], 120);
+    std::cerr << indices[0].sizes() << std::endl << std::endl;
+
+    std::cerr << "value" << std::endl;
+    print(std::cerr, value, 120);
+    std::cerr << value.sizes() << std::endl << std::endl;
+
+    std::cerr << "src" << std::endl;
+    print(std::cerr, src, 120);
+    std::cerr << src.sizes() << std::endl << std::endl;
+
+    std::cerr << "linearIndex" << std::endl;
+    print(std::cerr, linearIndex, 120);
+    std::cerr << linearIndex.sizes() << std::endl << std::endl;
+
+    std::cerr << "expandedValue" << std::endl;
+    print(std::cerr, expandedValue, 120);
+    std::cerr << expandedValue.sizes() << std::endl << std::endl;
+
+    Tensor& ret = src.put_(linearIndex, expandedValue, true);
+
+    std::cerr << "ret" << std::endl;
+    print(std::cerr, ret, 120);
+    std::cerr << ret.sizes() << std::endl << std::endl;
+
     return src.put_(linearIndex, expandedValue, true);
   }
   auto info = make_info(self, indices);
