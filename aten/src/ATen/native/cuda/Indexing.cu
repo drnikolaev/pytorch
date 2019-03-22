@@ -12,24 +12,19 @@
 #include <thrust/execution_policy.h>
 #include <thrust/unique.h>
 
-
 namespace at { namespace native {
-
-namespace {
 
 #ifdef __HIP_PLATFORM_HCC__
 static const int WARP_SIZE = 64;
-static const int BLOCKDIMY = 16;
 #else
 static const int WARP_SIZE = 32;
-static const int BLOCKDIMY = 32;
 #endif
 
-
+// TODO: this is cut&paste
 template <typename scalar_t>
 __global__ void embedding_backward_kernel(
     int64_t* input, int64_t* indices, scalar_t* grad_output, scalar_t* grad_weight,
-    int64_t* count, int64_t numel, int64_t stride, int padding_idx) {
+    int64_t numel, int64_t stride, int padding_idx) {
 
   using accscalar_t = acc_type<scalar_t, true>;
   int idx = blockIdx.x * 4 + threadIdx.y;
@@ -55,7 +50,6 @@ __global__ void embedding_backward_kernel(
       const int start_feature = threadIdx.x + blockIdx.y * blockDim.x * SZ;
       const int weight_row = ((int) input[idx]) * stride;
       const int grad_row = ((int) indices[idx]) * stride;
-      const accscalar_t scale = count ? (accscalar_t)1.0 / count[idx] : 1.0;
 
       accscalar_t gradient[SZ];
       accscalar_t weight[SZ];
@@ -71,7 +65,7 @@ __global__ void embedding_backward_kernel(
 
 #pragma unroll
       for (int ii = 0; ii < SZ; ii++) {
-        weight[ii] += gradient[ii] * scale;
+        weight[ii] += gradient[ii];
       }
 
 #pragma unroll
@@ -88,71 +82,21 @@ __global__ void embedding_backward_kernel(
 }
 
 
-Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indices,
-                                     int64_t num_weights, int64_t padding_idx,
-                                     bool scale_grad_by_freq) {
-  auto grad_arg = TensorArg(grad_, "grad", 1);
-  auto indices_arg = TensorArg(indices, "indices", 1);
-  checkScalarType("embedding_backward", indices_arg, kLong);
-  checkSameGPU("embedding_backward", grad_arg, indices_arg);
+Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & values, bool) {
+  auto grad_arg = TensorArg(values, "grad", 1);
+  auto indices_arg = TensorArg(indices_[0], "indices", 1);
+//  checkScalarType("index_put_cuda_", indices_arg, kLong);
+  checkSameGPU("index_put_cuda_", grad_arg, indices_arg);
 
-  std::cerr << "grad_" << std::endl;
-  print(std::cerr, grad_, 120);
-  std::cerr << grad_.sizes() << std::endl << std::endl;
+  int64_t num_weights = self.size(0);
+  int64_t padding_idx = -1L;
 
+  auto indices = indices_[0].toType(kLong);  // TODO
   auto num_indices = indices.numel();
-  auto grad = grad_.contiguous().view({num_indices, grad_.size(-1)});
-  auto grad_weight = at::zeros({num_weights, grad_.size(-1)}, grad_.options());
+  auto grad = values.contiguous().view({num_indices, values.size(-1)});
 
-  std::cerr << "grad.cnt" << std::endl;
-  print(std::cerr, grad, 120);
-  std::cerr << grad.sizes() << std::endl << std::endl;
-
-  int64_t stride = grad_weight.stride(0);
+  int64_t stride = self.stride(0);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-
-  if (num_indices <= 768 && !scale_grad_by_freq) {
-
-    std::cerr << "indices" << std::endl;
-    print(std::cerr, indices, 120);
-    std::cerr << indices.sizes() << std::endl << std::endl;
-
-    auto indices_contig = indices.contiguous();
-
-    std::cerr << "indices_contig" << std::endl;
-    print(std::cerr, indices_contig, 120);
-    std::cerr << indices_contig.sizes() << std::endl << std::endl;
-
-    dim3 grid(THCCeilDiv(stride, (int64_t)WARP_SIZE));
-    dim3 block(WARP_SIZE, BLOCKDIMY);
-
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF
-    (grad.type(),
-     "embedding_backward",
-     [&]
-     {
-       using accscalar_t = acc_type<scalar_t, true>;
-       embedding_backward_feature_kernel<scalar_t, accscalar_t>
-       <<<grid,
-         block,
-         sizeof(accscalar_t)*WARP_SIZE*BLOCKDIMY + sizeof(int)*WARP_SIZE*BLOCKDIMY,
-         stream>>>
-       (indices_contig.data<int64_t>(),
-           grad.data<scalar_t>(),
-           grad_weight.data<scalar_t>(),
-           static_cast<int>(num_indices),
-           static_cast<int64_t>(stride),
-           static_cast<int>(padding_idx));
-     });
-
-    THCudaCheck(cudaGetLastError());
-
-    std::cerr << "->grad_weight" << std::endl;
-    print(std::cerr, grad_weight, 120);
-    std::cerr << grad_weight.sizes() << std::endl << std::endl;
-
-    return grad_weight;
-  }
 
   auto sorted_indices = at::empty_like(indices);
   auto orig_indices = at::empty_like(indices);
@@ -175,77 +119,24 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
     // Sort; a stable sort is not required
     auto sorted_data = device_ptr(sorted_indices.data<int64_t>());
     thrust::sort_by_key(policy, sorted_data, sorted_data + num_indices, orig_data,
-                        ThrustLTOp<int64_t>());
-
-    std::cerr << "sorted_indices" << std::endl;
-    print(std::cerr, sorted_indices, 120);
-    std::cerr << sorted_indices.sizes() << std::endl << std::endl;
-
-    std::cerr << "orig_indices" << std::endl;
-    print(std::cerr, orig_indices, 120);
-    std::cerr << orig_indices.sizes() << std::endl << std::endl;
-
-
-  }
-
-  Tensor count;
-  if (scale_grad_by_freq) {
-    count = at::empty_like(indices);
-
-    auto allocator = THCThrustAllocator(globalContext().lazyInitCUDA());
-    auto policy = thrust::cuda::par(allocator).on(stream);
-
-    // Compute an increasing sequence per unique item in sortedIndices:
-    // sorted: 2 5 5 5 7 7 8 9 9
-    //  count: 1 1 2 3 1 2 1 1 2
-    auto sorted_data = device_ptr(sorted_indices.data<int64_t>());
-    auto count_data = device_ptr(count.data<int64_t>());
-    thrust::inclusive_scan_by_key(
-        policy,
-        sorted_data,
-        sorted_data + num_indices,
-        thrust::make_constant_iterator(1),
-        count_data
-    );
-
-    // Take the maximum of each count per unique key in reverse:
-    // sorted: 2 5 5 5 7 7 8 9 9
-    //  count: 1 3 3 3 2 2 1 2 2
-    thrust::inclusive_scan_by_key(
-        policy,
-        thrust::make_reverse_iterator(sorted_data + num_indices),
-        thrust::make_reverse_iterator(sorted_data),
-        thrust::make_reverse_iterator(count_data + num_indices),
-        thrust::make_reverse_iterator(count_data + num_indices),
-        thrust::equal_to<int64_t>(),
-        thrust::maximum<int64_t>()
-    );
+        ThrustLTOp<int64_t>());
   }
 
   dim3 grid(THCCeilDiv(num_indices, (int64_t) 4), THCCeilDiv(stride, (int64_t) 128));
   dim3 block(32, 4);
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad.type(), "embedding_backward", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad.type(), "index_put_cuda_", [&] {
     embedding_backward_kernel<<<grid, block, 0, stream>>>(
       sorted_indices.data<int64_t>(),
-          orig_indices.data<int64_t>(),
-          grad.data<scalar_t>(),
-          grad_weight.data<scalar_t>(),
-          count.defined() ? count.data<int64_t>() : nullptr,
-          num_indices,
-          stride,
-          padding_idx);
+      orig_indices.data<int64_t>(),
+      grad.data<scalar_t>(),
+      self.data<scalar_t>(),
+      num_indices,
+      stride,
+      padding_idx);
   });
   THCudaCheck(cudaGetLastError());
-
-  std::cerr << "->grad_weight" << std::endl;
-  print(std::cerr, grad_weight, 120);
-  std::cerr << grad_weight.sizes() << std::endl << std::endl;
-
-  return grad_weight;
+  return self;
 }
 
-
-
 }}  // namespace at::native
-
