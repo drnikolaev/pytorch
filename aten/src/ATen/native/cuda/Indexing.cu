@@ -91,7 +91,16 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
   int64_t num_weights = self.size(0);
   int64_t padding_idx = -1L;
 
-  auto indices = indices_[0].toType(kLong);  // TODO
+  std::cerr << "indices_[0]" << std::endl;
+  print(std::cerr, indices_[0], 120);
+  std::cerr << indices_[0].sizes() << std::endl << std::endl;
+
+  auto indices = indices_[0].toType(kByte);  // TODO
+
+  std::cerr << "indices" << std::endl;
+  print(std::cerr, indices, 120);
+  std::cerr << indices.sizes() << std::endl << std::endl;
+
   auto num_indices = indices.numel();
   auto grad = values.contiguous().view({num_indices, values.size(-1)});
 
