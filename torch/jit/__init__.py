@@ -540,7 +540,8 @@ def _check_trace(check_inputs, func, executor_options, module, check_tolerance, 
             has_warned[0] = True
             nondeterm_ops = [op for op in module.graph.nodes() if op.isNondeterministic()]
             if len(nondeterm_ops) > 0:
-                nondeterministic_ops_warning = "Trace had nondeterministic nodes. Nodes:\n"
+                nondeterministic_ops_warning = "Trace had nondeterministic nodes. "
+                nondeterministic_ops_warning += "Did you forget call .eval() on your model? Nodes:\n"
                 nondeterministic_ops_warning += "\n".join([indent(str(op)) for op in nondeterm_ops][:20])
                 nondeterministic_ops_warning += "\nThis may cause errors in trace checking. To disable trace checking,"\
                                                 " pass check_trace=False to torch.jit.trace()"
@@ -591,7 +592,8 @@ def trace(func,
           check_trace=True,
           check_inputs=None,
           check_tolerance=1e-5,
-          _force_outplace=False):
+          _force_outplace=False,
+          _module_class=None):
     """
     Trace a function and return an executable trace that will be optimized
     using just-in-time compilation.
@@ -657,7 +659,10 @@ def trace(func,
     # done primarily so that weird iterables fail here and not pybind11 code
     elif not isinstance(example_inputs, tuple):
         example_inputs = tuple(example_inputs)
-    module = TopLevelTracedModule(func, **executor_options)
+    if _module_class:
+        module = _module_class(func, **executor_options)
+    else:
+        module = TopLevelTracedModule(func, **executor_options)
     var_lookup_fn = _create_interpreter_name_lookup_fn(0)
     module._create_method_from_trace('forward', func, example_inputs,
                                      var_lookup_fn, _force_outplace)
@@ -899,9 +904,7 @@ class OrderedParameterDict(OrderedDictWrapper):
         super(OrderedParameterDict, self).__init__(module)
 
     def items(self):
-        return [(name, param) for name, param, is_buffer
-                in self.module._get_parameters()
-                if not is_buffer]
+        return [(name, param) for name, param in self.module._get_parameters()]
 
     def __setitem__(self, k, v):
         self.module._register_parameter(k, v, False)
@@ -920,12 +923,11 @@ class OrderedBufferDict(OrderedDictWrapper):
         super(OrderedBufferDict, self).__init__(module)
 
     def items(self):
-        return [(name, param) for name, param, is_buffer
-                in self.module._get_parameters()
-                if is_buffer]
+        return [(name, param) for name, _, param in
+                self.module._get_attributes() if isinstance(param, torch.Tensor)]
 
     def __setitem__(self, k, v):
-        self.module._register_parameter(k, v, True)
+        self.module._register_buffer(k, v)
 
     def __contains__(self, k):
         return self.module._has_buffer(k)
@@ -933,7 +935,7 @@ class OrderedBufferDict(OrderedDictWrapper):
     def __getitem__(self, k):
         if k not in self:
             raise KeyError(k)
-        return self.module._get_parameter(k)
+        return self.module._get_buffer(k)
 
 # base types that can be constants
 # in addition, tuples and lists of these base types are also considered constants
@@ -977,21 +979,23 @@ class ScriptMeta(type(torch._C.ScriptModule)):
     # this has to inherit from pybind11's metaclass otherwise we get
     # issues because ScriptModule inherits from torch._C.ScriptModule,
     # a pybind11 type
-    def __init__(cls, name, bases, attrs):
+    def __init__(self, name, bases, attrs):
         # find all the script methods
-        cls._original_methods = {}
+        self._original_methods = {}
         methods = []
         for k, v in sorted(attrs.items()):
             if isinstance(v, ScriptMethodStub):
-                delattr(cls, k)
+                delattr(self, k)
                 methods.append(v)
-                cls._original_methods[v.original_method.__name__] = v.original_method
+                self._original_methods[v.original_method.__name__] = v.original_method
         # after the user's __init__ register all the script methods
         # with the module
-        original_init = getattr(cls, '__init__', lambda self: None)
-        super_constants = getattr(super(cls), '_constants_set', set())
-        cls._constants_set = set(getattr(cls, '__constants__', ())).union(super_constants)
-        cls._overloads = dict(getattr(cls, '__overloads__', {}))
+        original_init = getattr(self, '__init__', lambda self: None)
+        super_constants = getattr(super(self), '_constants_set', set())
+        self._constants_set = set(getattr(self, '__constants__', ())).union(super_constants)
+        self._overloads = dict(getattr(self, '__overloads__', {}))
+
+        cls = self
 
         @functools.wraps(original_init)
         def init_then_register(self, *args, **kwargs):
@@ -1003,8 +1007,8 @@ class ScriptMeta(type(torch._C.ScriptModule)):
             original_init(self, *args, **kwargs)
             _create_methods_from_stubs(self, methods)
 
-        cls.__init__ = init_then_register
-        return super(ScriptMeta, cls).__init__(name, bases, attrs)
+        self.__init__ = init_then_register
+        return super(ScriptMeta, self).__init__(name, bases, attrs)
 
 
 if _enabled:
@@ -1061,9 +1065,8 @@ if _enabled:
                     + Tracing will not record any control-flow like if statements or loops. When
                       this control-flow is constant across your module, this is fine and it often
                       just inlines configuration decisions. But sometimes the control-flow is
-                      actually part of the model itself. For instance, a beam search in
-                      sequence-to-sequence translation is a loop over the (varying) sequence
-                      length of inputs.
+                      actually part of the model itself. For instance, a recurrent network is
+                      a loop over the (possibly dynamic) length of an input sequence.
 
                     + In the returned ``ScriptModule``, operations that have different behaviors
                       in ``training`` and ``eval`` modes will always behave as if it is in the
@@ -1161,8 +1164,16 @@ if _enabled:
                 if attr == 'training':
                     if self._has_buffer('training'):
                         self.__dict__['training'] = value
-                        self._get_parameter('training').fill_(int(value))
+                        self._get_buffer('training').fill_(int(value))
                         return
+                if isinstance(value, Attribute):
+                    the_type = torch.jit.annotations.ann_to_type(value.type)
+                    try:
+                        self._register_attribute(attr, the_type, value.value)
+                    except RuntimeError:
+                        raise RuntimeError("Could not register attribute '{}' of type '{}' for a value of type '{}'"
+                                           .format(attr, value.type, type(value.value)))
+                    return
                 return super(ScriptModule, self).__setattr__(attr, value)
 
             if hasattr(self, attr):
@@ -1551,6 +1562,10 @@ class _disable_tracing(object):
 def annotate(the_type, the_value):
     # noop in python
     return the_value
+
+
+Attribute = collections.namedtuple('Attribute', ['value', 'type'])
+
 
 if not torch._C._jit_init():
     raise RuntimeError("JIT initialization failed")

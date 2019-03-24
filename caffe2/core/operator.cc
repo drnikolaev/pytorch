@@ -25,6 +25,11 @@ C10_DEFINE_bool(
     false,
     "If set, disable implicit engine preferences. This is useful for unit "
     "testing and debugging cases.");
+C10_DEFINE_bool(
+    caffe2_operator_throw_if_fp_exceptions,
+    false,
+    "If set, throws if floating point exceptions (FE_DIVBYZERO, FE_INVALID, "
+    "FE_OVERFLOW) are detected when running any operator.");
 
 namespace caffe2 {
 
@@ -89,13 +94,13 @@ int compute_input_size_(const std::vector<c10::IValue>& inputs) {
 OperatorBase::OperatorBase(
     const c10::FunctionSchema& fn_schema,
     std::vector<c10::IValue> inputs,
-    std::vector<c10::IValue*> outputs)
+    std::vector<at::Tensor> outputs)
     : fn_schema_(make_unique<c10::FunctionSchema>(std::move(fn_schema))),
-      ivalue_inputs_(std::move(inputs)),
-      ivalue_outputs_(std::move(outputs)),
-      input_size_(compute_input_size_(ivalue_inputs_)) {
+      newstyle_inputs_(std::move(inputs)),
+      newstyle_outputs_(std::move(outputs)),
+      input_size_(compute_input_size_(newstyle_inputs_)) {
   input_tensors_.resize(input_size_);
-  output_tensors_.resize(ivalue_outputs_.size());
+  output_tensors_.resize(newstyle_outputs_.size());
 }
 
 vector<TensorShape> OperatorBase::InputTensorShapes() const {
@@ -119,7 +124,7 @@ GlobalEnginePrefType& g_global_engine_pref() {
   return *g_global_engine_pref_;
 }
 
-unique_ptr<OperatorBase> TryCreateC2Operator(
+unique_ptr<OperatorBase> TryCreateOperator(
     const string& key,
     const OperatorDef& operator_def,
     Workspace* ws) {
@@ -140,24 +145,6 @@ unique_ptr<OperatorBase> TryCreateC2Operator(
                  << err.what()
                  << ". Proto is: " << ProtoDebugString(operator_def);
     return nullptr;
-  }
-}
-
-unique_ptr<OperatorBase> TryCreateC10Operator(
-    const string& key,
-    const OperatorDef& operator_def,
-    Workspace* ws) {
-  return C10OperatorRegistry()->Create(key, operator_def, ws);
-}
-
-unique_ptr<OperatorBase> TryCreateOperator(
-    const string& key,
-    const OperatorDef& operator_def,
-    Workspace* ws) {
-  if (auto op = TryCreateC10Operator(key, operator_def, ws)) {
-    return op;
-  } else {
-    return TryCreateC2Operator(key, operator_def, ws);
   }
 }
 
@@ -354,23 +341,6 @@ unique_ptr<OperatorBase> CreateOperator(
   }
 }
 
-void RunOperator(
-    c10::Symbol name,
-    const std::vector<c10::IValue>& inputs,
-    const std::vector<c10::IValue*>& outputs) {
-  auto fn_wrap =
-      caffe2::FunctionSchemaRegistry()->Create(name.toUnqualString());
-  CAFFE_ENFORCE(
-      fn_wrap,
-      "Operator not registered with FunctionSchema constructor.",
-      name.toUnqualString());
-  auto fn = fn_wrap->getSchema();
-  auto op = caffe2::FunctionSchemaOperatorRegistry()->Create(
-      name.toUnqualString(), fn, inputs, outputs);
-
-  op->Run();
-}
-
 std::map<DeviceType, OperatorRegistry*>* gDeviceTypeRegistry() {
   static std::map<DeviceType, OperatorRegistry*> g_device_type_registry;
   return &g_device_type_registry;
@@ -402,15 +372,6 @@ C10_DEFINE_REGISTRY(
     GradientMakerBase,
     const OperatorDef&,
     const vector<GradientWrapper>&);
-
-C10_DEFINE_REGISTRY(
-    FunctionSchemaOperatorRegistry,
-    OperatorBase,
-    const c10::FunctionSchema,
-    std::vector<c10::IValue>,
-    std::vector<c10::IValue*>);
-
-C10_DEFINE_REGISTRY(FunctionSchemaRegistry, FunctionSchemaStorageBase);
 
 GradientOpsMeta GetGradientForOp(
     const OperatorDef& def, const vector<GradientWrapper>& g_output) {
@@ -749,16 +710,6 @@ std::set<std::string> GetRegisteredOperators() {
 
   // HIP operators
   for (const auto& name : HIPOperatorRegistry()->Keys()) {
-    all_keys.emplace(name);
-  }
-
-  // C10 operators
-  for (const auto& name : C10OperatorRegistry()->Keys()) {
-    all_keys.emplace(name);
-  }
-
-  // FunctionSchema registered operators
-  for (const auto& name : FunctionSchemaOperatorRegistry()->Keys()) {
     all_keys.emplace(name);
   }
 
