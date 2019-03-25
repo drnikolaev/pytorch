@@ -229,32 +229,15 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
   checkScalarType("embedding_backward", indices_arg, kLong);
   checkSameGPU("embedding_backward", grad_arg, indices_arg);
 
-  std::cerr << "grad_" << std::endl;
-  print(std::cerr, grad_, 120);
-  std::cerr << grad_.sizes() << std::endl << std::endl;
-
   auto num_indices = indices.numel();
   auto grad = grad_.contiguous().view({num_indices, grad_.size(-1)});
   auto grad_weight = at::zeros({num_weights, grad_.size(-1)}, grad_.options());
-
-  std::cerr << "grad.cnt" << std::endl;
-  print(std::cerr, grad, 120);
-  std::cerr << grad.sizes() << std::endl << std::endl;
 
   int64_t stride = grad_weight.stride(0);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   if (num_indices <= 768 && !scale_grad_by_freq) {
-
-    std::cerr << "indices" << std::endl;
-    print(std::cerr, indices, 120);
-    std::cerr << indices.sizes() << std::endl << std::endl;
-
     auto indices_contig = indices.contiguous();
-
-    std::cerr << "indices_contig" << std::endl;
-    print(std::cerr, indices_contig, 120);
-    std::cerr << indices_contig.sizes() << std::endl << std::endl;
 
     dim3 grid(THCCeilDiv(stride, (int64_t)WARP_SIZE));
     dim3 block(WARP_SIZE, BLOCKDIMY);
@@ -279,11 +262,6 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
        });
 
     THCudaCheck(cudaGetLastError());
-
-    std::cerr << "->grad_weight" << std::endl;
-    print(std::cerr, grad_weight, 120);
-    std::cerr << grad_weight.sizes() << std::endl << std::endl;
-
     return grad_weight;
   }
 
@@ -309,16 +287,6 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
     auto sorted_data = device_ptr(sorted_indices.data<int64_t>());
     thrust::sort_by_key(policy, sorted_data, sorted_data + num_indices, orig_data,
                         ThrustLTOp<int64_t>());
-
-    std::cerr << "sorted_indices" << std::endl;
-    print(std::cerr, sorted_indices, 120);
-    std::cerr << sorted_indices.sizes() << std::endl << std::endl;
-
-    std::cerr << "orig_indices" << std::endl;
-    print(std::cerr, orig_indices, 120);
-    std::cerr << orig_indices.sizes() << std::endl << std::endl;
-
-
   }
 
   Tensor count;
@@ -370,10 +338,6 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
       padding_idx);
   });
   THCudaCheck(cudaGetLastError());
-
-  std::cerr << "->grad_weight" << std::endl;
-  print(std::cerr, grad_weight, 120);
-  std::cerr << grad_weight.sizes() << std::endl << std::endl;
 
   return grad_weight;
 }

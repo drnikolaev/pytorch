@@ -12,7 +12,7 @@ namespace at {
 namespace at { namespace native {
 
 using index_fn = void(*)(TensorIterator &, IntArrayRef indexed_sizes, IntArrayRef indexed_strides);
-using index_put_fn = void(*)(TensorIterator &, IntArrayRef indexed_sizes, IntArrayRef indexed_strides, bool accumulate);
+using index_put_fn = void(*)(TensorIterator &, IntArrayRef indexed_sizes, IntArrayRef indexed_strides, const Tensor & value, bool accumulate);
 
 DECLARE_DISPATCH(index_fn, index_stub);
 DECLARE_DISPATCH(index_put_fn, index_put_stub);
