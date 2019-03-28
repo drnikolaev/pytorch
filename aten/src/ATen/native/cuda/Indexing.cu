@@ -88,13 +88,13 @@ flattenToFront(Tensor& self, TensorList indices) {
       transposedIndices.emplace_back(indices[i]);
     }
   }
-  for (int64_t i = 0; i < self.dim(); i++) {
+  for (int64_t i = 0L; i < self.dim(); i++) {
     if (!indices[i].defined()) {
       dims.push_back(i);
       transposedIndices.emplace_back();
     }
   }
-  self = self.flatten(0L, dims.back());
+  self = self.permute(dims).flatten(0L, dims.back());
   return torch::utils::flatten_dense_tensors(transposedIndices);
 }
 
@@ -173,7 +173,6 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
   checkScalarType("index_put_cuda_", indices_arg, kLong);
   checkSameGPU("index_put_cuda_", grad_arg, indices_arg);
 
-  int64_t num_weights = self.size(0);
   int64_t padding_idx = -1L;
 
   auto indices = flattenToFront(self, indices__);
