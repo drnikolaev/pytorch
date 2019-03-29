@@ -94,7 +94,10 @@ flattenToFront(Tensor& self, TensorList indices) {
       transposedIndices.emplace_back();
     }
   }
-  self = self.permute(dims).flatten(0L, dims.back());
+  if (dims.size() > 1) {
+    self = self.permute(dims);
+  }
+  self = self.flatten(0L, dims.back());
   return torch::utils::flatten_dense_tensors(transposedIndices);
 }
 
