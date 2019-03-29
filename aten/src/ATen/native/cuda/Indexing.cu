@@ -77,7 +77,7 @@ static std::vector<Tensor> expandByteTensors2(const Tensor & self, TensorList in
 // returns
 //  tensor.permute([1, 3, 0, 2]), {a, b, nullptr, nullptr}
 static Tensor
-flattenToFront(Tensor& self, TensorList indices) {
+flattenToFront(const Tensor& self, Tensor& self2, TensorList indices) {
   std::vector<int64_t> dims;
   std::vector<Tensor> transposedIndices;
 //  dims.reserve(self.dim());
@@ -91,14 +91,13 @@ flattenToFront(Tensor& self, TensorList indices) {
   for (int64_t i = 0L; i < self.dim(); i++) {
     if (!indices[i].defined()) {
       dims.push_back(i);
-      transposedIndices.emplace_back();
+//      transposedIndices.emplace_back();
     }
   }
-  if (dims.size() > 1) {
-    self = self.permute(dims);
-  }
-  self = self.flatten(0L, dims.back());
-  return torch::utils::flatten_dense_tensors(transposedIndices);
+  self2 = dims.size() > 1 ? self.permute(dims) : self;
+  self2 = self2.flatten(0L, dims.back());
+  return at::cat(transposedIndices);
+//  return torch::utils::flatten_dense_tensors(transposedIndices);
 }
 
 // TODO: this is cut&paste
@@ -178,11 +177,12 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
 
   int64_t padding_idx = -1L;
 
-  auto indices = flattenToFront(self, indices__);
+  Tensor self2;
+  auto indices = flattenToFront(self, self2, indices__);
   auto num_indices = indices.numel();
-  auto grad = values.contiguous().view({num_indices, values.size(-1)});
+  auto grad = values.contiguous();//.reshape({num_indices, values.size(-1)});
 
-  int64_t stride = self.stride(0);
+  int64_t stride = self2.stride(0);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   auto sorted_indices = at::empty_like(indices);
@@ -217,7 +217,7 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
       sorted_indices.data<int64_t>(),
       orig_indices.data<int64_t>(),
       grad.data<scalar_t>(),
-      self.data<scalar_t>(),
+      self2.data<scalar_t>(),
       num_indices,
       stride,
       padding_idx);
