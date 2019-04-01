@@ -8,9 +8,6 @@ template <>
 bool BoxWithNMSLimitOp<CPUContext>::RunOnDevice() {
   const auto& tscores = Input(0);
   const auto& tboxes = Input(1);
-  auto* out_scores = Output(0);
-  auto* out_boxes = Output(1);
-  auto* out_classes = Output(2);
 
   const int box_dim = rotated_ ? 5 : 4;
 
@@ -51,9 +48,9 @@ bool BoxWithNMSLimitOp<CPUContext>::RunOnDevice() {
   Eigen::Map<const EArrXf> batch_splits(batch_splits_data, batch_size);
   CAFFE_ENFORCE_EQ(batch_splits.sum(), N);
 
-  out_scores->Resize(0);
-  out_boxes->Resize(0, box_dim);
-  out_classes->Resize(0);
+  auto* out_scores = Output(0, {0}, at::dtype<float>());
+  auto* out_boxes = Output(1, {0, box_dim}, at::dtype<float>());
+  auto* out_classes = Output(2, {0}, at::dtype<float>());
 
   Tensor* out_keeps = nullptr;
   Tensor* out_keeps_size = nullptr;
@@ -170,9 +167,9 @@ bool BoxWithNMSLimitOp<CPUContext>::RunOnDevice() {
 
     // Write results
     int cur_start_idx = out_scores->size(0);
-    out_scores->Extend(total_keep_count, 50, &context_);
-    out_boxes->Extend(total_keep_count, 50, &context_);
-    out_classes->Extend(total_keep_count, 50, &context_);
+    out_scores->Extend(total_keep_count, 50);
+    out_boxes->Extend(total_keep_count, 50);
+    out_classes->Extend(total_keep_count, 50);
 
     int cur_out_idx = 0;
     for (int j = 1; j < num_classes; j++) {
@@ -205,7 +202,7 @@ bool BoxWithNMSLimitOp<CPUContext>::RunOnDevice() {
     }
 
     if (out_keeps) {
-      out_keeps->Extend(total_keep_count, 50, &context_);
+      out_keeps->Extend(total_keep_count, 50);
 
       Eigen::Map<EArrXi> out_keeps_arr(
           out_keeps->template mutable_data<int>() + cur_start_idx,
@@ -227,8 +224,7 @@ bool BoxWithNMSLimitOp<CPUContext>::RunOnDevice() {
   }
 
   if (OutputSize() > 3) {
-    auto* batch_splits_out = Output(3);
-    batch_splits_out->Resize(batch_size);
+    auto* batch_splits_out = Output(3, {batch_size}, at::dtype<float>());
     Eigen::Map<EArrXf> batch_splits_out_map(
         batch_splits_out->template mutable_data<float>(), batch_size);
     batch_splits_out_map =
@@ -299,3 +295,28 @@ SHOULD_NOT_DO_GRADIENT(BoxWithNMSLimit);
 
 } // namespace
 } // namespace caffe2
+
+C10_REGISTER_CAFFE2_OPERATOR_CPU(
+    BoxWithNMSLimit,
+    (std::vector<c10::Argument>{
+        c10::Argument("scores"),
+        c10::Argument("boxes"),
+        c10::Argument("batch_splits"),
+        c10::Argument("score_thresh", FloatType::get()),
+        c10::Argument("nms", FloatType::get()),
+        c10::Argument("detections_per_im", IntType::get()),
+        c10::Argument("soft_nms_enabled", BoolType::get()),
+        c10::Argument("soft_nms_method", StringType::get()),
+        c10::Argument("soft_nms_sigma", FloatType::get()),
+        c10::Argument("soft_nms_min_score_thres", FloatType::get()),
+        c10::Argument("rotated", BoolType::get()),
+    }),
+    (std::vector<c10::Argument>{
+        c10::Argument("scores"),
+        c10::Argument("boxes"),
+        c10::Argument("classes"),
+        c10::Argument("batch_splits"),
+        // c10::Argument("keeps"),
+        // c10::Argument("keeps_size"),
+    }),
+    caffe2::BoxWithNMSLimitOp<caffe2::CPUContext>);

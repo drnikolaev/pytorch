@@ -1,20 +1,20 @@
 #pragma once
 
-#include "ATen/core/ATenGeneral.h"
-#include "ATen/core/Allocator.h"
-#include "ATen/core/Deprecated.h"
-#include "ATen/core/Generator.h"
-#include "ATen/core/Layout.h"
-#include "ATen/core/Scalar.h"
-#include "ATen/core/ScalarType.h"
-#include "ATen/core/SparseTensorRef.h"
-#include "ATen/core/ArrayRef.h"
-#include "ATen/core/Half.h"
-#include "ATen/core/TensorTypeIdRegistration.h"
-#include "ATen/core/Reduction.h"
-#include "ATen/core/TensorOptions.h"
+#include <ATen/core/ATenGeneral.h>
+#include <c10/core/Allocator.h>
+#include <c10/util/Deprecated.h>
+#include <ATen/core/Generator.h>
+#include <c10/core/Layout.h>
+#include <c10/core/Scalar.h>
+#include <c10/core/ScalarType.h>
+#include <ATen/core/SparseTensorRef.h>
+#include <c10/util/ArrayRef.h>
+#include <c10/util/Half.h>
+#include <c10/core/TensorTypeIdRegistration.h>
+#include <ATen/core/Reduction.h>
+#include <c10/core/TensorOptions.h>
 
-#include "c10/util/Optional.h"
+#include <c10/util/Optional.h>
 
 #include <array>
 #include <cstddef>
@@ -29,17 +29,22 @@
 #endif
 #endif
 
+namespace c10 {
+struct Storage;
+}
+
 namespace at {
 
-class Context;
-struct Allocator;
-struct Generator;
-struct Storage;
 class Tensor;
+using TensorList = ArrayRef<Tensor>;
+
+class Context;
+struct Generator;
 
 static inline void noop_deleter(void*) {}
 
 enum class TypeID {
+  CPUBool,
   CPUByte,
   CPUChar,
   CPUDouble,
@@ -48,6 +53,7 @@ enum class TypeID {
   CPULong,
   CPUShort,
   CPUHalf,
+  SparseCPUBool,
   SparseCPUByte,
   SparseCPUChar,
   SparseCPUDouble,
@@ -55,6 +61,7 @@ enum class TypeID {
   SparseCPUInt,
   SparseCPULong,
   SparseCPUShort,
+  CUDABool,
   CUDAByte,
   CUDAChar,
   CUDADouble,
@@ -63,6 +70,7 @@ enum class TypeID {
   CUDALong,
   CUDAShort,
   CUDAHalf,
+  SparseCUDABool,
   SparseCUDAByte,
   SparseCUDAChar,
   SparseCUDADouble,
@@ -70,6 +78,24 @@ enum class TypeID {
   SparseCUDAInt,
   SparseCUDALong,
   SparseCUDAShort,
+  MSNPUBool,
+  MSNPUByte,
+  MSNPUChar,
+  MSNPUDouble,
+  MSNPUFloat,
+  MSNPUInt,
+  MSNPULong,
+  MSNPUShort,
+  MSNPUHalf,
+  XLABool,
+  XLAByte,
+  XLAChar,
+  XLADouble,
+  XLAFloat,
+  XLAInt,
+  XLALong,
+  XLAShort,
+  XLAHalf,
   CPUComplexFloat,
   CPUComplexDouble,
   CUDAComplexFloat,
@@ -88,21 +114,19 @@ struct CAFFE2_API Type {
   virtual Backend backend() const = 0;
   Layout layout() const noexcept { return layout_from_backend(backend()); }
   virtual bool is_cuda() const = 0;
+  virtual bool is_hip() const = 0;
   virtual bool is_sparse() const = 0;
   virtual bool is_distributed() const = 0;
   bool is_variable() const noexcept { return is_variable_; }
   bool is_undefined() const noexcept { return is_undefined_; }
   virtual Allocator * allocator() const = 0;
   virtual Device getDeviceFromPtr(void * data) const = 0;
-  virtual Storage storage(bool resizable = false) const = 0;
-  virtual Storage storage(size_t size, bool resizable = false) const = 0;
   virtual Storage storageFromBlob(void * data, int64_t size, const std::function<void(void*)> & deleter=noop_deleter) const = 0;
   virtual Storage storageWithAllocator(int64_t size, Allocator* allocator) const = 0;
   virtual std::unique_ptr<Generator> generator() const = 0;
   virtual Tensor unsafeTensorFromTH(void * th_pointer, bool retain) const = 0;
   virtual Storage unsafeStorageFromTH(void * th_pointer, bool retain) const = 0;
   virtual const char * toString() const = 0;
-  virtual size_t elementSizeInBytes() const = 0;
   virtual Type & toBackend(Backend b) const = 0;
   virtual Type & toScalarType(ScalarType s) const = 0;
   Type & toSparse() const {
@@ -117,6 +141,9 @@ struct CAFFE2_API Type {
   Type & cuda() const {
     return this->toBackend(at::backendToCUDA(this->backend()));
   }
+  Type & hip() const {
+    return this->toBackend(at::backendToHIP(this->backend()));
+  }
   // contiguous IDs for all types in the system
   // for external dispatch
   virtual TypeID ID() const = 0;
@@ -129,10 +156,11 @@ struct CAFFE2_API Type {
     return backendToDeviceType(backend());
   }
 
-  virtual Tensor copy(const Tensor & src, bool non_blocking=false, optional<Device> to_device={}) const = 0;
+  virtual Tensor copy(
+      const Tensor& src,
+      bool non_blocking = false,
+      c10::optional<Device> to_device = {}) const = 0;
   virtual Tensor & copy_(Tensor & self, const Tensor & src, bool non_blocking=false) const = 0;
-  virtual Tensor & s_copy_(Tensor & self, const Tensor & src, bool non_blocking) const = 0;
-  virtual Tensor & _s_copy_from(const Tensor & self, Tensor & dst, bool non_blocking) const = 0;
 
   virtual void backward(
       Tensor& self,
@@ -141,11 +169,10 @@ struct CAFFE2_API Type {
       bool create_graph) const = 0;
   virtual void set_data(Tensor & self, Tensor new_data) const = 0;
 
-  virtual Tensor tensorFromBlob(void * data, IntList sizes, const std::function<void(void*)> & deleter=noop_deleter) const = 0;
-  virtual Tensor tensorFromBlob(void * data, IntList sizes, IntList strides, const std::function<void(void*)> & deleter=noop_deleter) const = 0;
-  virtual Tensor tensorWithAllocator(IntList sizes, Allocator* allocator) const = 0;
-  virtual Tensor tensorWithAllocator(IntList sizes, IntList strides, Allocator* allocator) const = 0;
-  virtual Tensor scalarTensor(Scalar s) const = 0;
+  virtual Tensor tensorFromBlob(void * data, IntArrayRef sizes, const std::function<void(void*)> & deleter=noop_deleter) const = 0;
+  virtual Tensor tensorFromBlob(void * data, IntArrayRef sizes, IntArrayRef strides, const std::function<void(void*)> & deleter=noop_deleter) const = 0;
+  virtual Tensor tensorWithAllocator(IntArrayRef sizes, Allocator* allocator) const = 0;
+  virtual Tensor tensorWithAllocator(IntArrayRef sizes, IntArrayRef strides, Allocator* allocator) const = 0;
 
   bool operator==(const Type& other) const {
     return this == &other;
@@ -157,9 +184,21 @@ struct CAFFE2_API Type {
   /// Constructs the `TensorOptions` from a type and a `device_index`.
   TensorOptions options(int16_t device_index = -1) const {
     return TensorOptions().dtype(typeMeta())
-                          .device(backendToDeviceType(backend()), device_index)
+                          .device(device_type(), device_index)
                           .layout(layout())
                           .is_variable(is_variable());
+  }
+
+  /// Constructs the `TensorOptions` from a type and a Device.  Asserts that
+  /// the device type matches the device type of the type.
+  TensorOptions options(c10::optional<Device> device_opt) const {
+    if (!device_opt.has_value()) {
+      return options(-1);
+    } else {
+      Device device = device_opt.value();
+      AT_ASSERT(device.type() == device_type());
+      return options(device.index());
+    }
   }
 
   operator TensorOptions() const {
@@ -168,9 +207,6 @@ struct CAFFE2_API Type {
 
   // example
   // virtual Tensor * add(Tensor & a, Tensor & b) = 0;
-  virtual Tensor & _th_triu_(Tensor & self, int64_t diagonal) const = 0;
-  virtual Tensor & s__th_addcmul_(Tensor & self, const Tensor & tensor1, const Tensor & tensor2, Scalar value) const = 0;
-  virtual Tensor & _th_addcmul_(Tensor & self, const Tensor & tensor1, const Tensor & tensor2, Scalar value) const = 0;
   virtual Tensor abs(const Tensor & self) const = 0;
   virtual Tensor & abs_(Tensor & self) const = 0;
   virtual Tensor acos(const Tensor & self) const = 0;
@@ -186,14 +222,10 @@ struct CAFFE2_API Type {
   virtual Tensor all(const Tensor & self, int64_t dim, bool keepdim) const = 0;
   virtual bool allclose(const Tensor & self, const Tensor & other, double rtol, double atol, bool equal_nan) const = 0;
   virtual Tensor any(const Tensor & self, int64_t dim, bool keepdim) const = 0;
-  virtual Tensor argmax(const Tensor & self, int64_t dim, bool keepdim) const = 0;
-  virtual Tensor argmax(const Tensor & self) const = 0;
-  virtual Tensor argmin(const Tensor & self, int64_t dim, bool keepdim) const = 0;
-  virtual Tensor argmin(const Tensor & self) const = 0;
-  virtual Tensor as_strided(const Tensor & self, IntList size, IntList stride) const = 0;
-  virtual Tensor & as_strided_(Tensor & self, IntList size, IntList stride) const = 0;
-  virtual Tensor as_strided(const Tensor & self, IntList size, IntList stride, int64_t storage_offset) const = 0;
-  virtual Tensor & as_strided_(Tensor & self, IntList size, IntList stride, int64_t storage_offset) const = 0;
+  virtual Tensor argmax(const Tensor & self, c10::optional<int64_t> dim, bool keepdim) const = 0;
+  virtual Tensor argmin(const Tensor & self, c10::optional<int64_t> dim, bool keepdim) const = 0;
+  virtual Tensor as_strided(const Tensor & self, IntArrayRef size, IntArrayRef stride, c10::optional<int64_t> storage_offset) const = 0;
+  virtual Tensor & as_strided_(Tensor & self, IntArrayRef size, IntArrayRef stride, c10::optional<int64_t> storage_offset) const = 0;
   virtual Tensor asin(const Tensor & self) const = 0;
   virtual Tensor & asin_(Tensor & self) const = 0;
   virtual Tensor atan(const Tensor & self) const = 0;
@@ -233,7 +265,7 @@ struct CAFFE2_API Type {
   virtual Tensor div(const Tensor & self, Scalar other) const = 0;
   virtual Tensor & div_(Tensor & self, Scalar other) const = 0;
   virtual Tensor dot(const Tensor & self, const Tensor & tensor) const = 0;
-  virtual Tensor & resize_(Tensor & self, IntList size) const = 0;
+  virtual Tensor & resize_(Tensor & self, IntArrayRef size) const = 0;
   virtual Tensor erf(const Tensor & self) const = 0;
   virtual Tensor & erf_(Tensor & self) const = 0;
   virtual Tensor erfc(const Tensor & self) const = 0;
@@ -242,7 +274,7 @@ struct CAFFE2_API Type {
   virtual Tensor & exp_(Tensor & self) const = 0;
   virtual Tensor expm1(const Tensor & self) const = 0;
   virtual Tensor & expm1_(Tensor & self) const = 0;
-  virtual Tensor expand(const Tensor & self, IntList size, bool implicit) const = 0;
+  virtual Tensor expand(const Tensor & self, IntArrayRef size, bool implicit) const = 0;
   virtual Tensor expand_as(const Tensor & self, const Tensor & other) const = 0;
   virtual Tensor flatten(const Tensor & self, int64_t start_dim, int64_t end_dim) const = 0;
   virtual Tensor & fill_(Tensor & self, Scalar value) const = 0;
@@ -250,15 +282,15 @@ struct CAFFE2_API Type {
   virtual Tensor floor(const Tensor & self) const = 0;
   virtual Tensor & floor_(Tensor & self) const = 0;
   virtual Tensor ger(const Tensor & self, const Tensor & vec2) const = 0;
-  virtual std::tuple<Tensor,Tensor> gesv(const Tensor & self, const Tensor & A) const = 0;
   virtual Tensor fft(const Tensor & self, int64_t signal_ndim, bool normalized) const = 0;
   virtual Tensor ifft(const Tensor & self, int64_t signal_ndim, bool normalized) const = 0;
   virtual Tensor rfft(const Tensor & self, int64_t signal_ndim, bool normalized, bool onesided) const = 0;
-  virtual Tensor irfft(const Tensor & self, int64_t signal_ndim, bool normalized, bool onesided, IntList signal_sizes) const = 0;
+  virtual Tensor irfft(const Tensor & self, int64_t signal_ndim, bool normalized, bool onesided, IntArrayRef signal_sizes) const = 0;
   virtual Tensor index(const Tensor & self, TensorList indices) const = 0;
   virtual Tensor & index_copy_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) const = 0;
-  virtual Tensor index_put(const Tensor & self, TensorList indices, const Tensor & values) const = 0;
-  virtual Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & values) const = 0;
+  virtual Tensor index_copy(const Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) const = 0;
+  virtual Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & values, bool accumulate) const = 0;
+  virtual Tensor index_put(const Tensor & self, TensorList indices, const Tensor & values, bool accumulate) const = 0;
   virtual Tensor inverse(const Tensor & self) const = 0;
   virtual Tensor isclose(const Tensor & self, const Tensor & other, double rtol, double atol, bool equal_nan) const = 0;
   virtual bool is_distributed(const Tensor & self) const = 0;
@@ -279,19 +311,19 @@ struct CAFFE2_API Type {
   virtual Tensor logdet(const Tensor & self) const = 0;
   virtual Tensor log_softmax(const Tensor & self, int64_t dim, ScalarType dtype) const = 0;
   virtual Tensor log_softmax(const Tensor & self, int64_t dim) const = 0;
-  virtual Tensor logsumexp(const Tensor & self, int64_t dim, bool keepdim) const = 0;
+  virtual Tensor logsumexp(const Tensor & self, IntArrayRef dim, bool keepdim) const = 0;
   virtual Tensor matmul(const Tensor & self, const Tensor & other) const = 0;
   virtual Tensor matrix_power(const Tensor & self, int64_t n) const = 0;
   virtual std::tuple<Tensor,Tensor> max(const Tensor & self, int64_t dim, bool keepdim) const = 0;
-  virtual Tensor max_values(const Tensor & self, int64_t dim, bool keepdim) const = 0;
+  virtual Tensor max_values(const Tensor & self, IntArrayRef dim, bool keepdim) const = 0;
   virtual Tensor mean(const Tensor & self, ScalarType dtype) const = 0;
   virtual Tensor mean(const Tensor & self) const = 0;
-  virtual Tensor mean(const Tensor & self, int64_t dim, bool keepdim, ScalarType dtype) const = 0;
-  virtual Tensor mean(const Tensor & self, int64_t dim, bool keepdim) const = 0;
-  virtual Tensor mean(const Tensor & self, int64_t dim, ScalarType dtype) const = 0;
+  virtual Tensor mean(const Tensor & self, IntArrayRef dim, bool keepdim, ScalarType dtype) const = 0;
+  virtual Tensor mean(const Tensor & self, IntArrayRef dim, bool keepdim) const = 0;
+  virtual Tensor mean(const Tensor & self, IntArrayRef dim, ScalarType dtype) const = 0;
   virtual std::tuple<Tensor,Tensor> median(const Tensor & self, int64_t dim, bool keepdim) const = 0;
   virtual std::tuple<Tensor,Tensor> min(const Tensor & self, int64_t dim, bool keepdim) const = 0;
-  virtual Tensor min_values(const Tensor & self, int64_t dim, bool keepdim) const = 0;
+  virtual Tensor min_values(const Tensor & self, IntArrayRef dim, bool keepdim) const = 0;
   virtual Tensor mm(const Tensor & self, const Tensor & mat2) const = 0;
   virtual std::tuple<Tensor,Tensor> mode(const Tensor & self, int64_t dim, bool keepdim) const = 0;
   virtual Tensor mul(const Tensor & self, const Tensor & other) const = 0;
@@ -303,11 +335,11 @@ struct CAFFE2_API Type {
   virtual Tensor & mvlgamma_(Tensor & self, int64_t p) const = 0;
   virtual Tensor narrow_copy(const Tensor & self, int64_t dim, int64_t start, int64_t length) const = 0;
   virtual Tensor narrow(const Tensor & self, int64_t dim, int64_t start, int64_t length) const = 0;
-  virtual Tensor permute(const Tensor & self, IntList dims) const = 0;
+  virtual Tensor permute(const Tensor & self, IntArrayRef dims) const = 0;
   virtual Tensor pin_memory(const Tensor & self) const = 0;
   virtual Tensor pinverse(const Tensor & self, double rcond) const = 0;
-  virtual Tensor repeat(const Tensor & self, IntList repeats) const = 0;
-  virtual Tensor reshape(const Tensor & self, IntList shape) const = 0;
+  virtual Tensor repeat(const Tensor & self, IntArrayRef repeats) const = 0;
+  virtual Tensor reshape(const Tensor & self, IntArrayRef shape) const = 0;
   virtual Tensor reshape_as(const Tensor & self, const Tensor & other) const = 0;
   virtual Tensor round(const Tensor & self) const = 0;
   virtual Tensor & round_(Tensor & self) const = 0;
@@ -335,23 +367,24 @@ struct CAFFE2_API Type {
   virtual Tensor softmax(const Tensor & self, int64_t dim, ScalarType dtype) const = 0;
   virtual Tensor softmax(const Tensor & self, int64_t dim) const = 0;
   virtual std::vector<Tensor> split(const Tensor & self, int64_t split_size, int64_t dim) const = 0;
-  virtual std::vector<Tensor> split_with_sizes(const Tensor & self, IntList split_sizes, int64_t dim) const = 0;
+  virtual std::vector<Tensor> split_with_sizes(const Tensor & self, IntArrayRef split_sizes, int64_t dim) const = 0;
   virtual Tensor squeeze(const Tensor & self) const = 0;
   virtual Tensor squeeze(const Tensor & self, int64_t dim) const = 0;
   virtual Tensor & squeeze_(Tensor & self) const = 0;
   virtual Tensor & squeeze_(Tensor & self, int64_t dim) const = 0;
   virtual Tensor sspaddmm(const Tensor & self, const Tensor & mat1, const Tensor & mat2, Scalar beta, Scalar alpha) const = 0;
-  virtual Tensor stft(const Tensor & self, int64_t n_fft, int64_t hop_length, int64_t win_length, const Tensor & window, bool normalized, bool onesided) const = 0;
+  virtual Tensor stft(const Tensor & self, int64_t n_fft, c10::optional<int64_t> hop_length, c10::optional<int64_t> win_length, const Tensor & window, bool normalized, bool onesided) const = 0;
   virtual int64_t stride(const Tensor & self, int64_t dim) const = 0;
   virtual Tensor sum(const Tensor & self, ScalarType dtype) const = 0;
   virtual Tensor sum(const Tensor & self) const = 0;
-  virtual Tensor sum(const Tensor & self, IntList dim, bool keepdim, ScalarType dtype) const = 0;
-  virtual Tensor sum(const Tensor & self, IntList dim, bool keepdim) const = 0;
-  virtual Tensor sum(const Tensor & self, IntList dim, ScalarType dtype) const = 0;
+  virtual Tensor sum(const Tensor & self, IntArrayRef dim, bool keepdim, ScalarType dtype) const = 0;
+  virtual Tensor sum(const Tensor & self, IntArrayRef dim, bool keepdim) const = 0;
+  virtual Tensor sum(const Tensor & self, IntArrayRef dim, ScalarType dtype) const = 0;
+  virtual Tensor sum_to_size(const Tensor & self, IntArrayRef size) const = 0;
   virtual Tensor sqrt(const Tensor & self) const = 0;
   virtual Tensor & sqrt_(Tensor & self) const = 0;
   virtual Tensor std(const Tensor & self, bool unbiased) const = 0;
-  virtual Tensor std(const Tensor & self, int64_t dim, bool unbiased, bool keepdim) const = 0;
+  virtual Tensor std(const Tensor & self, IntArrayRef dim, bool unbiased, bool keepdim) const = 0;
   virtual Tensor prod(const Tensor & self, ScalarType dtype) const = 0;
   virtual Tensor prod(const Tensor & self) const = 0;
   virtual Tensor prod(const Tensor & self, int64_t dim, bool keepdim, ScalarType dtype) const = 0;
@@ -365,20 +398,22 @@ struct CAFFE2_API Type {
   virtual Tensor & tanh_(Tensor & self) const = 0;
   virtual Tensor transpose(const Tensor & self, int64_t dim0, int64_t dim1) const = 0;
   virtual Tensor & transpose_(Tensor & self, int64_t dim0, int64_t dim1) const = 0;
-  virtual Tensor flip(const Tensor & self, IntList dims) const = 0;
-  virtual Tensor roll(const Tensor & self, IntList shifts, IntList dims) const = 0;
-  virtual Tensor rot90(const Tensor & self, int64_t k, IntList dims) const = 0;
+  virtual Tensor flip(const Tensor & self, IntArrayRef dims) const = 0;
+  virtual Tensor roll(const Tensor & self, IntArrayRef shifts, IntArrayRef dims) const = 0;
+  virtual Tensor rot90(const Tensor & self, int64_t k, IntArrayRef dims) const = 0;
   virtual Tensor trunc(const Tensor & self) const = 0;
   virtual Tensor & trunc_(Tensor & self) const = 0;
   virtual Tensor type_as(const Tensor & self, const Tensor & other) const = 0;
   virtual Tensor unsqueeze(const Tensor & self, int64_t dim) const = 0;
   virtual Tensor & unsqueeze_(Tensor & self, int64_t dim) const = 0;
   virtual Tensor var(const Tensor & self, bool unbiased) const = 0;
-  virtual Tensor var(const Tensor & self, int64_t dim, bool unbiased, bool keepdim) const = 0;
+  virtual Tensor var(const Tensor & self, IntArrayRef dim, bool unbiased, bool keepdim) const = 0;
   virtual Tensor view_as(const Tensor & self, const Tensor & other) const = 0;
   virtual Tensor where(const Tensor & condition, const Tensor & self, const Tensor & other) const = 0;
+  virtual Tensor norm(const Tensor & self, c10::optional<Scalar> p, ScalarType dtype) const = 0;
   virtual Tensor norm(const Tensor & self, Scalar p) const = 0;
-  virtual Tensor norm(const Tensor & self, Scalar p, int64_t dim, bool keepdim) const = 0;
+  virtual Tensor norm(const Tensor & self, c10::optional<Scalar> p, IntArrayRef dim, bool keepdim, ScalarType dtype) const = 0;
+  virtual Tensor norm(const Tensor & self, c10::optional<Scalar> p, IntArrayRef dim, bool keepdim) const = 0;
   virtual Tensor clone(const Tensor & self) const = 0;
   virtual Tensor & resize_as_(Tensor & self, const Tensor & the_template) const = 0;
   virtual Tensor pow(const Tensor & self, Scalar exponent) const = 0;
@@ -389,8 +424,8 @@ struct CAFFE2_API Type {
   virtual Tensor & sub_(Tensor & self, Scalar other, Scalar alpha) const = 0;
   virtual Tensor addmm(const Tensor & self, const Tensor & mat1, const Tensor & mat2, Scalar beta, Scalar alpha) const = 0;
   virtual Tensor & addmm_(Tensor & self, const Tensor & mat1, const Tensor & mat2, Scalar beta, Scalar alpha) const = 0;
-  virtual Tensor & sparse_resize_(Tensor & self, IntList size, int64_t sparse_dim, int64_t dense_dim) const = 0;
-  virtual Tensor & sparse_resize_and_clear_(Tensor & self, IntList size, int64_t sparse_dim, int64_t dense_dim) const = 0;
+  virtual Tensor & sparse_resize_(Tensor & self, IntArrayRef size, int64_t sparse_dim, int64_t dense_dim) const = 0;
+  virtual Tensor & sparse_resize_and_clear_(Tensor & self, IntArrayRef size, int64_t sparse_dim, int64_t dense_dim) const = 0;
   virtual Tensor sparse_mask(const Tensor & self, SparseTensorRef mask) const = 0;
   virtual Tensor to_dense(const Tensor & self) const = 0;
   virtual int64_t sparse_dim(const Tensor & self) const = 0;
@@ -413,24 +448,33 @@ struct CAFFE2_API Type {
   virtual Tensor to(const Tensor & self, Device device, ScalarType dtype, bool non_blocking, bool copy) const = 0;
   virtual Tensor to(const Tensor & self, ScalarType dtype, bool non_blocking, bool copy) const = 0;
   virtual Tensor to(const Tensor & self, const Tensor & other, bool non_blocking, bool copy) const = 0;
-  virtual Scalar _local_scalar(const Tensor & self) const = 0;
+  virtual Scalar item(const Tensor & self) const = 0;
   virtual void* data_ptr(const Tensor & self) const = 0;
   virtual Tensor & set_(Tensor & self, Storage source) const = 0;
-  virtual Tensor & set_(Tensor & self, Storage source, int64_t storage_offset, IntList size, IntList stride) const = 0;
+  virtual Tensor & set_(Tensor & self, Storage source, int64_t storage_offset, IntArrayRef size, IntArrayRef stride) const = 0;
   virtual Tensor & set_(Tensor & self, const Tensor & source) const = 0;
   virtual Tensor & set_(Tensor & self) const = 0;
   virtual bool is_set_to(const Tensor & self, const Tensor & tensor) const = 0;
   virtual Tensor & masked_fill_(Tensor & self, const Tensor & mask, Scalar value) const = 0;
+  virtual Tensor masked_fill(const Tensor & self, const Tensor & mask, Scalar value) const = 0;
   virtual Tensor & masked_fill_(Tensor & self, const Tensor & mask, const Tensor & value) const = 0;
+  virtual Tensor masked_fill(const Tensor & self, const Tensor & mask, const Tensor & value) const = 0;
   virtual Tensor & masked_scatter_(Tensor & self, const Tensor & mask, const Tensor & source) const = 0;
-  virtual Tensor view(const Tensor & self, IntList size) const = 0;
+  virtual Tensor masked_scatter(const Tensor & self, const Tensor & mask, const Tensor & source) const = 0;
+  virtual Tensor view(const Tensor & self, IntArrayRef size) const = 0;
   virtual Tensor & put_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate) const = 0;
   virtual Tensor & index_add_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) const = 0;
+  virtual Tensor index_add(const Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) const = 0;
   virtual Tensor & index_fill_(Tensor & self, int64_t dim, const Tensor & index, Scalar value) const = 0;
+  virtual Tensor index_fill(const Tensor & self, int64_t dim, const Tensor & index, Scalar value) const = 0;
   virtual Tensor & index_fill_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & value) const = 0;
+  virtual Tensor index_fill(const Tensor & self, int64_t dim, const Tensor & index, const Tensor & value) const = 0;
   virtual Tensor & scatter_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & src) const = 0;
+  virtual Tensor scatter(const Tensor & self, int64_t dim, const Tensor & index, const Tensor & src) const = 0;
   virtual Tensor & scatter_(Tensor & self, int64_t dim, const Tensor & index, Scalar value) const = 0;
+  virtual Tensor scatter(const Tensor & self, int64_t dim, const Tensor & index, Scalar value) const = 0;
   virtual Tensor & scatter_add_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & src) const = 0;
+  virtual Tensor scatter_add(const Tensor & self, int64_t dim, const Tensor & index, const Tensor & src) const = 0;
   virtual Tensor & lt_(Tensor & self, Scalar other) const = 0;
   virtual Tensor & lt_(Tensor & self, const Tensor & other) const = 0;
   virtual Tensor & gt_(Tensor & self, Scalar other) const = 0;
@@ -477,6 +521,7 @@ struct CAFFE2_API Type {
   virtual Tensor & pow_(Tensor & self, Scalar exponent) const = 0;
   virtual Tensor & pow_(Tensor & self, const Tensor & exponent) const = 0;
   virtual Tensor & lerp_(Tensor & self, const Tensor & end, Scalar weight) const = 0;
+  virtual Tensor & lerp_(Tensor & self, const Tensor & end, const Tensor & weight) const = 0;
   virtual Tensor & sign_(Tensor & self) const = 0;
   virtual Tensor & fmod_(Tensor & self, Scalar other) const = 0;
   virtual Tensor & fmod_(Tensor & self, const Tensor & other) const = 0;
@@ -516,24 +561,23 @@ struct CAFFE2_API Type {
   virtual Tensor index_select(const Tensor & self, int64_t dim, const Tensor & index) const = 0;
   virtual Tensor masked_select(const Tensor & self, const Tensor & mask) const = 0;
   virtual Tensor nonzero(const Tensor & self) const = 0;
-  virtual Tensor gather(const Tensor & self, int64_t dim, const Tensor & index) const = 0;
+  virtual Tensor gather(const Tensor & self, int64_t dim, const Tensor & index, bool sparse_grad) const = 0;
   virtual Tensor addcmul(const Tensor & self, const Tensor & tensor1, const Tensor & tensor2, Scalar value) const = 0;
   virtual Tensor addcdiv(const Tensor & self, const Tensor & tensor1, const Tensor & tensor2, Scalar value) const = 0;
   virtual std::tuple<Tensor,Tensor> gels(const Tensor & self, const Tensor & A) const = 0;
-  virtual std::tuple<Tensor,Tensor> trtrs(const Tensor & self, const Tensor & A, bool upper, bool transpose, bool unitriangular) const = 0;
+  virtual std::tuple<Tensor,Tensor> triangular_solve(const Tensor & self, const Tensor & A, bool upper, bool transpose, bool unitriangular) const = 0;
   virtual std::tuple<Tensor,Tensor> symeig(const Tensor & self, bool eigenvectors, bool upper) const = 0;
   virtual std::tuple<Tensor,Tensor> eig(const Tensor & self, bool eigenvectors) const = 0;
   virtual std::tuple<Tensor,Tensor,Tensor> svd(const Tensor & self, bool some, bool compute_uv) const = 0;
   virtual Tensor cholesky(const Tensor & self, bool upper) const = 0;
-  virtual Tensor potrs(const Tensor & self, const Tensor & input2, bool upper) const = 0;
+  virtual Tensor cholesky_solve(const Tensor & self, const Tensor & input2, bool upper) const = 0;
+  virtual std::tuple<Tensor,Tensor> solve(const Tensor & self, const Tensor & A) const = 0;
   virtual Tensor potri(const Tensor & self, bool upper) const = 0;
   virtual std::tuple<Tensor,Tensor> pstrf(const Tensor & self, bool upper, Scalar tol) const = 0;
   virtual std::tuple<Tensor,Tensor> qr(const Tensor & self) const = 0;
   virtual std::tuple<Tensor,Tensor> geqrf(const Tensor & self) const = 0;
   virtual Tensor orgqr(const Tensor & self, const Tensor & input2) const = 0;
   virtual Tensor ormqr(const Tensor & self, const Tensor & input2, const Tensor & input3, bool left, bool transpose) const = 0;
-  virtual std::tuple<Tensor,Tensor> btrifact(const Tensor & self, bool pivot) const = 0;
-  virtual std::tuple<Tensor,Tensor,Tensor> btrifact_with_info(const Tensor & self, bool pivot) const = 0;
   virtual Tensor btrisolve(const Tensor & self, const Tensor & LU_data, const Tensor & LU_pivots) const = 0;
   virtual Tensor multinomial(const Tensor & self, int64_t num_samples, bool replacement, Generator * generator) const = 0;
   virtual Tensor lgamma(const Tensor & self) const = 0;
@@ -546,6 +590,7 @@ struct CAFFE2_API Type {
   virtual Tensor neg(const Tensor & self) const = 0;
   virtual Tensor atan2(const Tensor & self, const Tensor & other) const = 0;
   virtual Tensor lerp(const Tensor & self, const Tensor & end, Scalar weight) const = 0;
+  virtual Tensor lerp(const Tensor & self, const Tensor & end, const Tensor & weight) const = 0;
   virtual Tensor histc(const Tensor & self, int64_t bins, Scalar min, Scalar max) const = 0;
   virtual Tensor sign(const Tensor & self) const = 0;
   virtual Tensor fmod(const Tensor & self, Scalar other) const = 0;
@@ -558,6 +603,7 @@ struct CAFFE2_API Type {
   virtual Tensor max(const Tensor & self) const = 0;
   virtual Tensor median(const Tensor & self) const = 0;
   virtual std::tuple<Tensor,Tensor> sort(const Tensor & self, int64_t dim, bool descending) const = 0;
+  virtual Tensor argsort(const Tensor & self, int64_t dim, bool descending) const = 0;
   virtual std::tuple<Tensor,Tensor> topk(const Tensor & self, int64_t k, int64_t dim, bool largest, bool sorted) const = 0;
   virtual Tensor all(const Tensor & self) const = 0;
   virtual Tensor any(const Tensor & self) const = 0;
@@ -575,4 +621,4 @@ protected:
 
 } // namespace at
 
-#include "ATen/core/Tensor.h"
+#include <ATen/core/Tensor.h>

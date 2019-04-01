@@ -3,9 +3,10 @@
 #include <ATen/Context.h>
 #include <ATen/DeviceGuard.h>
 #include <ATen/Functions.h>
-#include <ATen/OptionsGuard.h>
-#include <ATen/core/ScalarType.h>
-#include <ATen/core/TensorOptions.h>
+#include <c10/core/ScalarType.h>
+#include <c10/core/TensorOptions.h>
+
+#include <torch/cuda.h>
 
 // NB: This file is compiled even in CPU build (for some reason), so
 // make sure you don't include any CUDA only headers.
@@ -31,7 +32,7 @@ at::Device CUDADevice(DeviceIndex index) {
 #define REQUIRE_TENSOR_OPTIONS(device_, index_, type_, layout_)                \
   ASSERT_EQ(tensor.device().type(), Device((device_), (index_)).type());   \
   ASSERT_EQ(tensor.device().index(), Device((device_), (index_)).index()); \
-  ASSERT_EQ(tensor.type().scalarType(), (type_));                          \
+  ASSERT_EQ(tensor.scalar_type(), (type_));                                \
   ASSERT_TRUE(tensor.type().layout() == (layout_))
 
 TEST(TensorOptionsTest, ConstructsWellFromCUDATypes_CUDA) {
@@ -62,7 +63,7 @@ TEST(TensorOptionsTest, ConstructsWellFromCUDATensors_MultiCUDA) {
   options = empty(5, getNonVariableType(Backend::SparseCUDA, kByte)).options();
   REQUIRE_OPTIONS(kCUDA, 0, kByte, kSparse);
 
-  if (at::globalContext().getNumGPUs() > 1) {
+  if (torch::cuda::device_count() > 1) {
     Tensor tensor;
     {
       DeviceGuard guard(CUDADevice(1));
@@ -77,51 +78,5 @@ TEST(TensorOptionsTest, ConstructsWellFromCUDATensors_MultiCUDA) {
     }
     options = tensor.options();
     REQUIRE_OPTIONS(kCUDA, 1, kFloat, kSparse);
-  }
-}
-
-TEST(OptionsGuardTest, TestFunctionality_CUDA) {
-  Tensor tensor;
-  {
-    OptionsGuard guard(device(kCUDA));
-    tensor = at::empty({10});
-  }
-  REQUIRE_TENSOR_OPTIONS(kCUDA, 0, kFloat, kStrided);
-
-  {
-    OptionsGuard guard(device({kCUDA, 1}));
-    tensor = at::empty({10});
-  }
-  REQUIRE_TENSOR_OPTIONS(kCUDA, 1, kFloat, kStrided);
-
-  {
-    OptionsGuard guard(device(kCUDA).dtype(kInt));
-    tensor = at::empty({10});
-  }
-  REQUIRE_TENSOR_OPTIONS(kCUDA, 0, kInt, kStrided);
-}
-
-TEST(OptionsGuardTest, DeviceGuardOptionsGuardInteraction_MultiCUDA) {
-  Tensor tensor;
-  {
-    // Check that OptionsGuard respects any active device before construction.
-    DeviceGuard guard(CUDADevice(1));
-    {
-      OptionsGuard guard(device(kCUDA));
-      tensor = at::empty({10});
-      REQUIRE_TENSOR_OPTIONS(kCUDA, 1, kFloat, kStrided);
-      {
-        // Check that OptionsGuard respects any active device after
-        // construction.
-        DeviceGuard guard(CUDADevice(0));
-        tensor = at::empty({10});
-        REQUIRE_TENSOR_OPTIONS(kCUDA, 0, kFloat, kStrided);
-        {
-          OptionsGuard guard(device({kCUDA, 1}));
-          tensor = at::empty({10});
-          REQUIRE_TENSOR_OPTIONS(kCUDA, 1, kFloat, kStrided);
-        }
-      }
-    }
   }
 }

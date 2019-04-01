@@ -1,5 +1,8 @@
 #include "caffe2/operators/layer_norm_op.h"
 
+#include <c10/core/Tensor.h>
+
+#include "caffe2/core/operator_c10wrapper.h"
 #include "caffe2/utils/eigen_utils.h"
 
 namespace caffe2 {
@@ -12,12 +15,14 @@ void LayerNormOp<CPUContext>::ComputeStdDevAndFusedParams(
     const T* var,
     T* stddev,
     T* scale,
-    T* bias) {
+    T* bias,
+    float epsilon,
+    CPUContext* /*context*/) {
   ConstEigenVectorArrayMap<T> var_arr(var, N);
   EigenVectorArrayMap<T> stddev_arr(stddev, N);
   EigenVectorArrayMap<T> scale_arr(scale, N);
-  scale_arr = (var_arr + static_cast<T>(epsilon_)).rsqrt();
-  stddev_arr = scale_arr * (var_arr + static_cast<T>(epsilon_));
+  scale_arr = (var_arr + static_cast<T>(epsilon)).rsqrt();
+  stddev_arr = scale_arr * (var_arr + static_cast<T>(epsilon));
   EigenVectorArrayMap<T>(bias, N) =
       -scale_arr * ConstEigenVectorArrayMap<T>(mean, N);
 }
@@ -30,7 +35,8 @@ void LayerNormOp<CPUContext>::LayerNormForward(
     const T* X,
     const T* scale,
     const T* bias,
-    T* Y) {
+    T* Y,
+    CPUContext* context) {
   EigenArrayMap<T>(Y, N, M) =
       (ConstEigenArrayMap<T>(X, N, M).rowwise() *
        ConstEigenVectorArrayMap<T>(scale, M).transpose())
@@ -50,9 +56,11 @@ void LayerNormGradientOp<CPUContext>::ComputeInternalGradients(
     T* ds,
     T* db) {
   ConstEigenArrayMap<T> dY_arr(dY, N, M);
-  EigenVectorArrayMap<T>(ds, M) =
-      (dY_arr * ConstEigenArrayMap<T>(X, N, M)).colwise().sum();
-  EigenVectorArrayMap<T>(db, M) = dY_arr.colwise().sum();
+  ConstEigenArrayMap<T> X_arr(X, N, M);
+  for (int i = 0; i < M; ++i) {
+    ds[i] = (dY_arr.col(i) * X_arr.col(i)).sum();
+    db[i] = dY_arr.col(i).sum();
+  }
 }
 
 template <>
@@ -177,3 +185,20 @@ to the end.)
     .Output(2, "stddev", "Standard deviations for each feature vector");
 
 } // namespace caffe2
+
+C10_REGISTER_CAFFE2_OPERATOR_CPU(
+    LayerNorm,
+    (std::vector<c10::Argument>{
+        c10::Argument("input"),
+        c10::Argument("axis", c10::IntType::get()),
+        c10::Argument("epsilon", c10::FloatType::get())}),
+    (std::vector<c10::Argument>{c10::Argument("output"),
+                                c10::Argument("mean"),
+                                c10::Argument("stdev")}),
+    caffe2::LayerNormOp<caffe2::CPUContext>)
+
+namespace caffe2 {
+REGISTER_C10_OPERATOR_FOR_CAFFE2_DISPATCH_CPU(
+    "_caffe2::LayerNorm",
+    C10LayerNorm_DontUseThisOpYet);
+}

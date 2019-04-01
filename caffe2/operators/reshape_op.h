@@ -14,8 +14,9 @@ template <typename F, class Context>
 class ReshapeOp : public Operator<Context> {
  public:
   USE_OPERATOR_CONTEXT_FUNCTIONS;
-  ReshapeOp(const OperatorDef& operator_def, Workspace* ws)
-      : Operator<Context>(operator_def, ws),
+  template <class... Args>
+  explicit ReshapeOp(Args&&... args)
+      : Operator<Context>(std::forward<Args>(args)...),
         new_shape_(this->template GetRepeatedArgument<int64_t>("shape")) {}
 
   bool RunOnDevice() override {
@@ -29,7 +30,8 @@ class ReshapeOp : public Operator<Context> {
 
   template <typename T>
   bool DoRunWithType() {
-    DoRunWithTypeImpl<T>(Input(0), Output(0));
+    DoRunWithTypeImpl<T>(
+        Input(0), Output(0, Input(0).sizes(), Input(0).dtype()));
     return true;
   }
 
@@ -58,7 +60,7 @@ class ReshapeOp : public Operator<Context> {
     }
 
     // Copy over the dimensions for those that are specified zero.
-    for (int i = 0; i < actual_new_shape.size() && i < input.dim(); ++i) {
+    for (size_t i = 0; i < actual_new_shape.size() && i < input.dim(); ++i) {
       if (actual_new_shape[i] == 0) {
         actual_new_shape[i] = input.size(i);
       }
@@ -114,15 +116,15 @@ class ReshapeOp : public Operator<Context> {
     }
 
     // Write the original shape to the second output.
-    auto* old_shape = Output(1);
-    old_shape->Resize(input.dim());
+
+    auto* old_shape = Output(1, {input.dim()}, at::dtype<T>());
     T* old_shape_data = old_shape->template mutable_data<T>();
     for (int i = 0; i < input.dim(); ++i) {
       math::Set<T, Context>(1, input.size(i), old_shape_data + i, &context_);
     }
 
     output->Resize(actual_new_shape);
-    if (output != &input) {
+    if (!IsInputOutputAlias(0, 0)) {
       // If we are not doing in-place computation, a copy is needed.
       context_.CopyItemsSameDevice(
           input.dtype(),

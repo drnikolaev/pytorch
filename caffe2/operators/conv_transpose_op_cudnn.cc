@@ -8,8 +8,9 @@ namespace caffe2 {
 
 class CudnnConvTransposeOpBase : public ConvTransposeUnpoolBase<CUDAContext> {
  public:
-  CudnnConvTransposeOpBase(const OperatorDef& operator_def, Workspace* ws)
-      : ConvTransposeUnpoolBase<CUDAContext>(operator_def, ws),
+  template <class... Args>
+  explicit CudnnConvTransposeOpBase(Args&&... args)
+      : ConvTransposeUnpoolBase<CUDAContext>(std::forward<Args>(args)...),
         cudnn_wrapper_(&context_),
         cudnn_ws_nbytes_limit_(OperatorBase::GetSingleArgument<size_t>(
             "ws_nbytes_limit",
@@ -53,7 +54,7 @@ class CudnnConvTransposeOpBase : public ConvTransposeUnpoolBase<CUDAContext> {
     CUDNN_ENFORCE(cudnnCreateConvolutionDescriptor(&conv_desc_));
   }
 
-  ~CudnnConvTransposeOpBase() {
+  ~CudnnConvTransposeOpBase() override {
     CUDNN_ENFORCE(cudnnDestroyTensorDescriptor(bottom_desc_));
     CUDNN_ENFORCE(cudnnDestroyFilterDescriptor(filter_desc_));
     if (InputSize() == 3) {
@@ -85,10 +86,11 @@ class CudnnConvTransposeOpBase : public ConvTransposeUnpoolBase<CUDAContext> {
 template <typename T>
 class CudnnConvTransposeOp final : public CudnnConvTransposeOpBase {
  public:
-  CudnnConvTransposeOp(const OperatorDef& operator_def, Workspace* ws)
-      : CudnnConvTransposeOpBase(operator_def, ws) {}
+  template <class... Args>
+  explicit CudnnConvTransposeOp(Args&&... args)
+      : CudnnConvTransposeOpBase(std::forward<Args>(args)...) {}
 
-  ~CudnnConvTransposeOp() {}
+  ~CudnnConvTransposeOp() override {}
 
   bool RunOnDevice() override;
 
@@ -103,15 +105,16 @@ class CudnnConvTransposeOp final : public CudnnConvTransposeOpBase {
 template <typename T>
 class CudnnConvTransposeGradientOp final : public CudnnConvTransposeOpBase {
  public:
-  CudnnConvTransposeGradientOp(const OperatorDef& operator_def, Workspace* ws)
-      : CudnnConvTransposeOpBase(operator_def, ws),
+  template <class... Args>
+  explicit CudnnConvTransposeGradientOp(Args&&... args)
+      : CudnnConvTransposeOpBase(std::forward<Args>(args)...),
         no_bias_(OperatorBase::GetSingleArgument<bool>("no_bias", false)) {
     CAFFE_ENFORCE(
         !(no_bias_ && OutputSize() == 3),
         "If bias is not present, you should not have 3 grad output.");
   }
 
-  ~CudnnConvTransposeGradientOp() {}
+  ~CudnnConvTransposeGradientOp() override {}
 
   bool RunOnDevice() override;
 
@@ -135,7 +138,6 @@ template <typename T>
 bool CudnnConvTransposeOp<T>::RunOnDevice() {
   auto& X = Input(INPUT);
   auto& filter = Input(FILTER);
-  auto* Y = Output(0);
   int C = 0;
   switch (order_) {
     case StorageOrder::NHWC:
@@ -147,7 +149,8 @@ bool CudnnConvTransposeOp<T>::RunOnDevice() {
     default:
       LOG(FATAL) << "Unknown storage order: " << order_;
   }
-  ConvTransposeUnpoolBase<CUDAContext>::SetOutputSize(X, Y, C);
+  auto sizes = ConvTransposeUnpoolBase<CUDAContext>::GetOutputSize(X, C);
+  auto* Y = Output(0, sizes, at::dtype<T>());
 
   int N = 0, M = 0, H = 0, W = 0, H_out = 0, W_out = 0;
   switch (order_) {
@@ -368,7 +371,7 @@ bool CudnnConvTransposeGradientOp<T>::RunOnDevice() {
   auto& X = Input(INPUT);
   auto& filter = Input(FILTER);
   auto& dY = Input(OUTPUT_GRAD);
-  auto* dfilter = Output(FILTER_GRAD);
+
   CAFFE_ENFORCE_EQ(X.dim(), 4);
   CAFFE_ENFORCE_EQ(filter.dim(), 4);
   int C = 0;
@@ -413,7 +416,7 @@ bool CudnnConvTransposeGradientOp<T>::RunOnDevice() {
   }
   // Since we only handle LegacyPadding::NOTSET, we don't need to
   // compute padding.
-  dfilter->ResizeLike(filter);
+  auto* dfilter = Output(FILTER_GRAD, filter.sizes(), at::dtype<T>());
 
   // Set up the cudnn algorithms & workspace if necessary
   bool input_changed = (X.sizes() != cudnn_input_dims_);
@@ -615,8 +618,7 @@ bool CudnnConvTransposeGradientOp<T>::RunOnDevice() {
 
   // Now, actually run the computation.
   if (!no_bias_) {
-    auto* dbias = Output(BIAS_OR_INPUT_GRAD);
-    dbias->Resize(C);
+    auto* dbias = Output(BIAS_OR_INPUT_GRAD, {C}, at::dtype<T>());
     CUDNN_ENFORCE(cudnnConvolutionBackwardBias(
         cudnn_wrapper_.inline_cudnn_handle(),
         cudnnTypeWrapper<T>::kOne(),
@@ -645,8 +647,11 @@ bool CudnnConvTransposeGradientOp<T>::RunOnDevice() {
 
     if (OutputSize() == 3 || (no_bias_ && (OutputSize() == 2))) {
       // Compute the gradient w.r.t. the input.
-      auto* dX = Output(no_bias_ ? BIAS_OR_INPUT_GRAD : INPUT_GRAD);
-      dX->ResizeLike(X);
+
+      auto* dX = Output(
+          no_bias_ ? BIAS_OR_INPUT_GRAD : INPUT_GRAD,
+          X.sizes(),
+          at::dtype<T>());
       CUDNN_ENFORCE(cudnnConvolutionForward(
           state->cudnn_handle(),
           cudnnTypeWrapper<T>::kOne(),

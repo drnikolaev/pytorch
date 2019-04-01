@@ -10,17 +10,20 @@
 
 namespace c10 {
 
-#if !C10_MOBILE
+#ifndef C10_MOBILE
 #define FORALL_NS_SYMBOLS(_)       \
   _(namespaces, prim)              \
   _(namespaces, aten)              \
   _(namespaces, onnx)              \
   _(namespaces, attr)              \
   _(namespaces, scope)             \
+  _(namespaces, user)              \
   _(namespaces, namespaces)        \
   _(prim, Assign)                  \
+  _(prim, BroadcastingChunk)       \
+  _(prim, BroadcastSizes)          \
   _(prim, Constant)                \
-  _(prim, None)                    \
+  _(prim, ChunkSizes)              \
   _(prim, Drop)                    \
   _(prim, Eval)                    \
   _(prim, Expand) /* onnx */       \
@@ -38,10 +41,12 @@ namespace c10 {
   _(prim, Placeholder) /* debug */ \
   _(prim, Print)                   \
   _(prim, PythonOp)                \
+  _(prim, IgnoredPythonOp)         \
   _(prim, Reverse)                 \
   _(prim, Return)                  \
   _(prim, Store)                   \
-  _(prim, Undefined)               \
+  _(prim, AutogradZero)            \
+  _(prim, AutogradAnyNonZero)      \
   _(prim, Starred)                 \
   _(prim, TupleConstruct)          \
   _(prim, TupleUnpack)             \
@@ -49,34 +54,55 @@ namespace c10 {
   _(prim, TupleSlice)              \
   _(prim, ListConstruct)           \
   _(prim, ListUnpack)              \
-  _(prim, BoolToTensor)            \
+  _(prim, DictConstruct)           \
+  _(prim, DictIndex)               \
   _(prim, NumToTensor)             \
-  _(prim, TensorToNum)             \
   _(prim, ImplicitTensorToNum)     \
-  _(prim, TensorToBool)            \
-  _(prim, IntToFloat)              \
-  _(prim, FloatToInt)              \
-  _(prim, StringToFloat)           \
-  _(prim, device)            \
-  _(prim, dtype)             \
-  _(prim, shape)             \
+  _(prim, Bool)                    \
+  _(prim, Int)                     \
+  _(prim, Float)                   \
+  _(prim, device)                  \
+  _(prim, dtype)                   \
+  _(prim, shape)                   \
+  _(prim, requires_grad)           \
   _(prim, AutogradAdd)             \
   _(prim, GradOf)                  \
-  _(prim, AnyDefined)              \
   _(prim, FusedConcat)             \
   _(prim, ConstantChunk)           \
-  _(prim, NoneGenerator)           \
   _(prim, MMTreeReduce)            \
+  _(prim, MMBatchSide)             \
+  _(prim, min)                     \
+  _(prim, max)                     \
+  _(prim, rangelist)               \
+  _(aten, _grad_sum_to_size)       \
+  _(aten, _ncf_unsqueeze)          \
+  _(aten, warn)                    \
   _(aten, floordiv)                \
+  _(aten, __round_to_zero_floordiv)\
+  _(aten, _unwrap_optional)        \
   _(prim, fork)                    \
   _(prim, RaiseException)          \
+  _(prim, Function)                \
+  _(prim, CreateObject)            \
+  _(prim, SetAttr)                 \
+  _(prim, GetAttr)                 \
+  _(prim, AddStatValue)            \
+  _(prim, TimePoint)               \
   _(aten, append)                  \
+  _(aten, item)                    \
   _(aten, format)                  \
   _(aten, __not__)                 \
   _(aten, __is__)                  \
   _(aten, __isnot__)               \
   _(aten, copy_)                   \
   _(aten, _set_item)               \
+  _(aten, index_put_)              \
+  _(aten, device)                  \
+  _(aten, hash)                    \
+  _(aten, len)                     \
+  _(aten, list)                    \
+  _(aten, wait)                    \
+  _(prim, unchecked_unwrap_optional)\
   FORALL_ATEN_BASE_SYMBOLS(_)      \
   _(onnx, Add)                     \
   _(onnx, Concat)                  \
@@ -105,6 +131,8 @@ namespace c10 {
   _(onnx, Less)                    \
   _(onnx, Not)                     \
   _(onnx, ATen)                    \
+  _(onnx, Split)                   \
+  _(onnx, ConstantOfShape)         \
   FORALL_ATTR_BASE_SYMBOLS(_)      \
   _(attr, Subgraph)                \
   _(attr, ReverseSubgraph)         \
@@ -129,7 +157,10 @@ namespace c10 {
   _(attr, name)                    \
   _(attr, a)                       \
   _(attr, b)                       \
-  _(attr, beg)
+  _(attr, beg)                     \
+  _(attr, idx)                     \
+  _(attr, split)                   \
+  _(attr, slot)
 #else
 #define FORALL_NS_SYMBOLS(_) \
   _(namespaces, prim)              \
@@ -137,6 +168,7 @@ namespace c10 {
   _(namespaces, onnx)              \
   _(namespaces, attr)              \
   _(namespaces, scope)             \
+  _(namespaces, user)              \
   _(namespaces, namespaces)
 #endif
 
@@ -178,7 +210,7 @@ namespace c10 {
 
 using unique_t = uint32_t;
 
-static const std::string domain_prefix = "org.pytorch.";
+const std::string& domain_prefix();
 
 // A Symbol is like an interned string, but with a little extra
 // structure; it is namespaced via SymbolNamespace and the resulting
@@ -203,6 +235,7 @@ struct CAFFE2_API Symbol {
   static Symbol aten(const std::string & s);
   static Symbol onnx(const std::string & s);
   static Symbol prim(const std::string & s);
+  static Symbol user(const std::string & s);
   // TODO: eliminate me
   static Symbol scope(const std::string & s);
 
@@ -210,6 +243,7 @@ struct CAFFE2_API Symbol {
   bool is_aten() const;
   bool is_prim() const;
   bool is_onnx() const;
+  bool is_user() const;
 
   // So we can switch on this
   constexpr operator unique_t() const {
@@ -268,10 +302,12 @@ inline Symbol Symbol::aten(const std::string & s)  { return Symbol::fromQualStri
 inline Symbol Symbol::onnx(const std::string & s)  { return Symbol::fromQualString("onnx::" + s); }
 inline Symbol Symbol::prim(const std::string & s)  { return Symbol::fromQualString("prim::" + s); }
 inline Symbol Symbol::scope(const std::string & s) { return Symbol::fromQualString("scope::" + s); }
+inline Symbol Symbol::user(const std::string & s) { return Symbol::fromQualString("user::" + s); }
 inline bool Symbol::is_attr() const { return ns() == namespaces::attr; }
 inline bool Symbol::is_aten() const { return ns() == namespaces::aten; }
 inline bool Symbol::is_prim() const { return ns() == namespaces::prim; }
 inline bool Symbol::is_onnx() const { return ns() == namespaces::onnx; }
+inline bool Symbol::is_user() const { return ns() == namespaces::user; }
 
 } // namespace c10
 

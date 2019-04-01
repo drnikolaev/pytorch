@@ -3,6 +3,7 @@
 from __future__ import print_function
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime
 import os
 import shutil
@@ -10,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import unittest
 
 import torch
 import torch._six
@@ -26,8 +28,10 @@ TESTS = [
     'dataloader',
     'distributed',
     'distributions',
+    'docs_coverage',
     'expecttest',
     'indexing',
+    'indexing_cuda',
     'jit',
     'multiprocessing',
     'multiprocessing_spawn',
@@ -39,7 +43,10 @@ TESTS = [
     'thd_distributed',
     'torch',
     'type_info',
+    'type_hints',
     'utils',
+    'namedtuple_return_api',
+    'jit_fuser',
 ]
 
 WINDOWS_BLACKLIST = [
@@ -85,8 +92,8 @@ THD_DISTRIBUTED_TESTS_CONFIG = {
 }
 
 # https://stackoverflow.com/questions/2549939/get-signal-names-from-numbers-in-python
-SIGNALS_TO_NAMES_DICT = dict((getattr(signal, n), n) for n in dir(signal)
-                             if n.startswith('SIG') and '_' not in n)
+SIGNALS_TO_NAMES_DICT = {getattr(signal, n): n for n in dir(signal)
+                         if n.startswith('SIG') and '_' not in n}
 
 CPP_EXTENSIONS_ERROR = """
 Ninja (https://ninja-build.org) must be available to run C++ extensions tests,
@@ -131,14 +138,36 @@ def shell(command, cwd=None):
         p.wait()
 
 
+@contextmanager
+def cd(path):
+    if not os.path.isabs(path):
+        raise RuntimeError('Can only cd to absolute path, got: {}'.format(path))
+    orig_path = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(orig_path)
+
+
 def run_test(executable, test_module, test_directory, options):
     unittest_args = options.additional_unittest_args
     if options.verbose:
         unittest_args.append('--verbose')
     # Can't call `python -m unittest test_*` here because it doesn't run code
     # in `if __name__ == '__main__': `. So call `python test_*.py` instead.
-    command = executable + [test_module + '.py'] + unittest_args
-    return shell(command, test_directory)
+    argv = [test_module + '.py'] + unittest_args
+
+    # Forking after HIP is initialized could trigger random
+    # ihipException issue, see
+    # https://github.com/pytorch/pytorch/issues/14497
+    if TEST_WITH_ROCM:
+        with cd(test_directory):
+            res = unittest.main(argv=argv, module=test_module, exit=False).result
+        return int(bool(len(res.failures) + len(res.errors)))
+    else:
+        command = executable + argv
+        return shell(command, test_directory)
 
 
 def test_cpp_extensions(executable, test_module, test_directory, options):
@@ -147,10 +176,16 @@ def test_cpp_extensions(executable, test_module, test_directory, options):
     except RuntimeError:
         print(CPP_EXTENSIONS_ERROR)
         return 1
+    cpp_extensions_test_dir = os.path.join(test_directory, 'cpp_extensions')
     return_code = shell([sys.executable, 'setup.py', 'install', '--root', './install'],
-                        os.path.join(test_directory, 'cpp_extensions'))
+                        cwd=cpp_extensions_test_dir)
     if return_code != 0:
         return return_code
+    if sys.platform != 'win32':
+        return_code = shell([sys.executable, 'setup.py', 'install', '--root', './install'],
+                            cwd=os.path.join(cpp_extensions_test_dir, 'no_python_abi_suffix_test'))
+        if return_code != 0:
+            return return_code
 
     python_path = os.environ.get('PYTHONPATH', '')
     try:
@@ -202,10 +237,10 @@ def test_distributed(executable, test_module, test_directory, options):
                 os.mkdir(os.path.join(tmp_dir, 'test_dir'))
                 if backend == 'mpi':
                     # test mpiexec for --noprefix option
-                    devnull = open(os.devnull, 'w')
-                    noprefix_opt = '--noprefix' if subprocess.call(
-                        'mpiexec -n 1 --noprefix bash -c ""', shell=True,
-                        stdout=devnull, stderr=subprocess.STDOUT) == 0 else ''
+                    with open(os.devnull, 'w') as devnull:
+                        noprefix_opt = '--noprefix' if subprocess.call(
+                            'mpiexec -n 1 --noprefix bash -c ""', shell=True,
+                            stdout=devnull, stderr=subprocess.STDOUT) == 0 else ''
 
                     mpiexec = ['mpiexec', '-n', '3', noprefix_opt] + executable
 
@@ -304,14 +339,14 @@ def get_executable_command(options):
     else:
         executable = [sys.executable]
     if options.pytest:
-        executable += ['-m', 'pytest']
+        executable += ['-m', 'pytest', '--durations=10']
     return executable
 
 
 def find_test_index(test, selected_tests, find_last_index=False):
-    """Find the index of the first or last occurrence of a given test/test module in the list of seleceted tests.
+    """Find the index of the first or last occurrence of a given test/test module in the list of selected tests.
 
-    This function is used to determine the indexes when slicing the list of selected tests when
+    This function is used to determine the indices when slicing the list of selected tests when
     ``options.first``(:attr:`find_last_index`=False) and/or ``options.last``(:attr:`find_last_index`=True) are used.
 
     :attr:`selected_tests` can be a list that contains multiple consequent occurrences of tests
@@ -370,9 +405,8 @@ def get_selected_tests(options):
     selected_tests = exclude_tests(options.exclude, selected_tests)
 
     if sys.platform == 'win32' and not options.ignore_win_blacklist:
-        ostype = os.environ.get('MSYSTEM')
         target_arch = os.environ.get('VSCMD_ARG_TGT_ARCH')
-        if ostype != 'MINGW64' or target_arch != 'x64':
+        if target_arch != 'x64':
             WINDOWS_BLACKLIST.append('cpp_extensions')
 
         selected_tests = exclude_tests(WINDOWS_BLACKLIST, selected_tests, 'on Windows')

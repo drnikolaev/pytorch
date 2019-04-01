@@ -1,12 +1,12 @@
 import copy
 
 import torch
-from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors, \
-    _take_tensors
 
 from torch.cuda.comm import broadcast_coalesced
-from torch.cuda import nccl
 import torch.distributed as dist
+
+if dist.is_available():
+    from torch.distributed.distributed_c10d import _get_default_group
 
 from ..modules import Module
 from .replicate import replicate
@@ -17,7 +17,7 @@ from torch.cuda._utils import _get_device_index
 
 class DistributedDataParallel(Module):
     r"""Implements distributed data parallelism that is based on
-    torch.distributed package at the module level.
+    ``torch.distributed`` package at the module level.
 
     This container parallelizes the application of the given module by
     splitting the input across the specified devices by chunking in the batch
@@ -25,15 +25,13 @@ class DistributedDataParallel(Module):
     each such replica handles a portion of the input. During the backwards
     pass, gradients from each node are averaged.
 
-    The batch size should be larger than the number of GPUs used locally. It
-    should also be an integer multiple of the number of GPUs so that each chunk
-    is the same size (so that each GPU processes the same number of samples).
+    The batch size should be larger than the number of GPUs used locally.
 
     See also: :ref:`distributed-basics` and :ref:`cuda-nn-dataparallel-instead`.
     The same constraints on input as in :class:`torch.nn.DataParallel` apply.
 
     Creation of this class requires that ``torch.distributed`` to be already
-    initialized, by calling :func:`torch.distributed.init_process_group`
+    initialized, by calling :func:`torch.distributed.init_process_group`.
 
     ``DistributedDataParallel`` can be used in the following two ways:
 
@@ -45,7 +43,7 @@ class DistributedDataParallel(Module):
     this way, you can simply construct the model as the following:
 
         >>> torch.distributed.init_process_group(backend="nccl")
-        >>> model = DistributedDataParallel(model) # device_ids will include all GPU devices be default
+        >>> model = DistributedDataParallel(model) # device_ids will include all GPU devices by default
 
     (2) Multi-Process Single-GPU
 
@@ -58,7 +56,7 @@ class DistributedDataParallel(Module):
     parallel training.
 
     Here is how to use it: on each host with N GPUs, you should spawn up N
-    processes, while ensuring that each process invidually works on a single GPU
+    processes, while ensuring that each process individually works on a single GPU
     from 0 to N-1. Therefore, it is your job to ensure that your training script
     operates on a single given GPU by calling:
 
@@ -78,6 +76,13 @@ class DistributedDataParallel(Module):
         distributed training and this applies to both single-node and multi-node
         distributed training
 
+    .. note:: This module also supports mixed-precision distributed training.
+        This means that your model can have different types of parameters such
+        as mixed types of fp16 and fp32, the gradient reduction on these
+        mixed types of parameters will just work fine.
+        Also note that ``nccl`` backend is currently the fastest and highly
+        recommended backend for fp16/fp32 mixed-precision training.
+
     .. warning::
         This module works only with the ``gloo`` and ``nccl`` backends.
 
@@ -96,9 +101,9 @@ class DistributedDataParallel(Module):
         This module assumes all parameters are registered in the model of each
         distributed processes are in the same order. The module itself will
         conduct gradient all-reduction following the reverse order of the
-        registered parameters of the model. In other wise, it is users'
+        registered parameters of the model. In other words, it is users'
         responsibility to ensure that each distributed process has the exact
-        same model and thus the exact parameter registeration order.
+        same model and thus the exact same parameter registration order.
 
     .. warning::
         This module assumes all buffers and gradients are dense.
@@ -122,6 +127,17 @@ class DistributedDataParallel(Module):
         won't be invoked anymore, unless the hooks are initialized in the
         :meth:`forward` method.
 
+    .. warning::
+        You should never try to change your model's parameters after wrapping
+        up your model with DistributedDataParallel. In other words, when
+        wrapping up your model with DistributedDataParallel, the constructor of
+        DistributedDataParallel will register the additional gradient
+        reduction functions on all the parameters of the model itself at the
+        time of construction. If you change the model's parameters after
+        the DistributedDataParallel construction, this is not supported and
+        unexpected behaviors can happen, since some parameters' gradient
+        reduction functions might not get called.
+
     .. note::
         Parameters are never broadcast between processes. The module performs
         an all-reduce step on gradients and assumes that they will be modified
@@ -135,27 +151,38 @@ class DistributedDataParallel(Module):
         output_device (int or torch.device): device location of output (default: device_ids[0])
         broadcast_buffers (bool): flag that enables syncing (broadcasting) buffers of
                            the module at beginning of the forward function.
-                           (default: True)
+                           (default: ``True``)
         process_group: the process group to be used for distributed data
-                       all-reduction. If None, the default process group, which
+                       all-reduction. If ``None``, the default process group, which
                        is created by ```torch.distributed.init_process_group```,
-                       will be used. (default: None)
+                       will be used. (default: ``None``)
         bucket_cap_mb: DistributedDataParallel will bucket parameters into
                        multiple buckets so that gradient reduction of each
                        bucket can potentially overlap with backward computation.
-                       bucket_cap_mb controls the bucket size in MegaBytes (MB)
+                       :attr:`bucket_cap_mb` controls the bucket size in MegaBytes (MB)
                        (default: 25)
+        check_reduction: when setting to ``True``, it enables DistributedDataParallel
+                         to automatically check if the previous iteration's
+                         backward reductions were successfully issued at the
+                         beginning of every iteration's forward function.
+                         You normally don't need this option enabled unless you
+                         are observing weird behaviors such as different ranks
+                         are getting different gradients, which should not
+                         happen if DistributedDataParallel is correctly used.
+                         (default: ``False``)
 
     Attributes:
         module (Module): the module to be parallelized
 
     Example::
+
         >>> torch.distributed.init_process_group(backend='nccl', world_size=4, init_method='...')
         >>> net = torch.nn.DistributedDataParallel(model, pg)
     """
     def __init__(self, module, device_ids=None,
                  output_device=None, dim=0, broadcast_buffers=True,
-                 process_group=None, bucket_cap_mb=25):
+                 process_group=None, bucket_cap_mb=25,
+                 check_reduction=False):
 
         super(DistributedDataParallel, self).__init__()
 
@@ -167,7 +194,7 @@ class DistributedDataParallel(Module):
             output_device = device_ids[0]
 
         if process_group is None:
-            self.process_group = dist.get_default_group()
+            self.process_group = _get_default_group()
         else:
             self.process_group = process_group
 
@@ -176,11 +203,15 @@ class DistributedDataParallel(Module):
         self.device_ids = list(map(lambda x: _get_device_index(x, True), device_ids))
         self.output_device = _get_device_index(output_device, True)
         self.broadcast_buffers = broadcast_buffers
+        self.check_reduction = check_reduction
 
         MB = 1024 * 1024
 
         # used for intra-node param sync and inter-node sync as well
         self.broadcast_bucket_size = 250 * MB
+
+        # reduction bucket size
+        self.bucket_bytes_cap = bucket_cap_mb * MB
 
         # Sync params and buffers
         module_states = list(self.module.state_dict().values())
@@ -188,7 +219,19 @@ class DistributedDataParallel(Module):
             self._dist_broadcast_coalesced(module_states,
                                            self.broadcast_bucket_size)
 
-        if len(device_ids) > 1:
+        self._ddp_init_helper()
+
+    def _ddp_init_helper(self):
+        """
+        Initialization helper function that does the following:
+
+        (1) replicating the module from device[0] to the other devices
+        (2) bucketing the parameters for reductions
+        (3) resetting the bucketing states
+        (4) registering the grad hooks
+        (5) passing a handle of DDP to SyncBatchNorm Layer
+        """
+        if len(self.device_ids) > 1:
             # TODO: we don't need to replicate params in here. they're always going to
             # be broadcasted using larger blocks in broadcast_coalesced, so it might be
             # better to not pollute the caches with these small blocks
@@ -209,15 +252,24 @@ class DistributedDataParallel(Module):
             self.modules_params_data[dev_idx] = [p.data for p in module.parameters()]
             self.modules_buffers_data[dev_idx] = [b.data for b in module.buffers()]
 
-        bucket_bytes_cap = bucket_cap_mb * MB
-
         # This is a triply-nested list where the "dimensions" are: devices, buckets, bucket_elems
         param_buckets = []
+
         # Split the parameters into buckets and by types as well
-        param_buckets = [dist._dist_bucket_tensors(list(m.parameters()),
-                                                   int(bucket_bytes_cap),
+        # We only need to bucket and reduce parameters that require grad and
+        # this is also true for backward since only the backward hooks for
+        # parameters that require grad will be registered with gradient
+        # reduction functions
+        params_to_bucket = [[] for _ in self._module_copies]
+        for dev_idx, m in enumerate(self._module_copies):
+            for p in m.parameters():
+                if p.requires_grad:
+                    params_to_bucket[dev_idx].append(p)
+
+        param_buckets = [dist._dist_bucket_tensors(dev_params_to_bucket,
+                                                   int(self.bucket_bytes_cap),
                                                    fine_grained=False)
-                         for m in self._module_copies]
+                         for dev_params_to_bucket in params_to_bucket]
 
         self.bucket_sizes = []
         self.bucket_map = {}
@@ -245,30 +297,38 @@ class DistributedDataParallel(Module):
         # We will always reduce the bucket following the reverse order
         # that is, alway reduces following the order of: n - 1, n - 2, ..., 0
         self.next_bucket = len(self.bucket_sizes) - 1
+        # When all buckets are reduced, this will be set to True. This flag is
+        # useful for sanity checks to ensure that each iteration's backward has
+        # always reduced all buckets
+        self.all_buckets_reduced = False
+        self.check_previous_reduction = False
         self.ready_buckets_not_reduced = set()
         self.reduction_works = [None for _ in range(len(self.bucket_sizes))]
         self.devs_ready = [0 for _ in range(len(self.bucket_sizes))]
         self._register_grad_hooks()
 
+        # passing a handle to torch.nn.SyncBatchNorm layer
+        self._passing_sync_batchnorm_handle(self._module_copies)
+
     def __getstate__(self):
         self._check_default_group()
         attrs = copy.copy(self.__dict__)
         del attrs['process_group'], \
-            attrs['allreduce_opts'], \
             attrs['default_streams'], \
             attrs['_grad_accs']
         return attrs
 
     def __setstate__(self, state):
         # If serializable, then the process group should be the default one
-        self.process_group = dist.get_default_group()
+        self.process_group = _get_default_group()
+        self.check_previous_reduction = False
         super(DistributedDataParallel, self).__setstate__(state)
-        self._register_grad_hooks()
+        self._ddp_init_helper()
 
     def _check_default_group(self):
         pickle_not_supported = False
         try:
-            if self.process_group != dist.get_default_group():
+            if self.process_group != _get_default_group():
                 pickle_not_supported = True
         except RuntimeError:
             pickle_not_supported = True
@@ -280,7 +340,26 @@ class DistributedDataParallel(Module):
                                "init_process_group and have not passed "
                                "process_group argument to DDP constructor")
 
+    def _check_previous_reduction(self):
+        if not self.training:
+            return
+        # self.check_previous_reduction will be False in the first iteration
+        # and is then toggled to True for all future iterations.
+        if self.check_previous_reduction is False:
+            self.check_previous_reduction = True
+        else:
+            if not self.all_buckets_reduced:
+                raise RuntimeError("Not all gradients have been reduced from "
+                                   "the backward of the previous iteration. "
+                                   "This is an unexpected and fatal error. "
+                                   "Please check and ensure that the model's "
+                                   "parameters are not changed after you wrap "
+                                   "up the model with DistributedDataParallel.")
+        self.all_buckets_reduced = False
+
     def forward(self, *inputs, **kwargs):
+        if self.check_reduction:
+            self._check_previous_reduction()
         inputs, kwargs = self.scatter(inputs, kwargs, self.device_ids)
         self._sync_params()
         if len(self.device_ids) == 1:
@@ -298,6 +377,7 @@ class DistributedDataParallel(Module):
         return gather(outputs, output_device, dim=self.dim)
 
     def train(self, mode=True):
+        self.check_previous_reduction = False
         super(DistributedDataParallel, self).train(mode)
         for module in self._module_copies[1:]:
             module.train(mode)
@@ -330,6 +410,12 @@ class DistributedDataParallel(Module):
                         for tensor, buffer_data in zip(tensors, module_buffers_data):
                             buffer_data.set_(tensor)
 
+    def _passing_sync_batchnorm_handle(self, module_copies):
+        for dev_idx, module in enumerate(module_copies):
+            for layer in module.modules():
+                if isinstance(layer, torch.nn.modules.SyncBatchNorm):
+                    layer._specify_ddp_gpu_num(len(self.device_ids))
+
     def _register_grad_hooks(self):
         self._grad_accs = []  # need to keep them in scope
 
@@ -338,8 +424,6 @@ class DistributedDataParallel(Module):
         for dev_id in self.device_ids:
             with torch.cuda.device(dev_id):
                 self.default_streams.append(torch.cuda.current_stream())
-
-        self.allreduce_opts = dist.AllreduceOptions()
 
         for device_idx, module in enumerate(self._module_copies):
             for p in module.parameters():
@@ -393,6 +477,7 @@ class DistributedDataParallel(Module):
                 if self.next_bucket == -1:
                     # A final sync for all the reduction works
                     self._sync_reduction_works()
+                    self.all_buckets_reduced = True
 
         return distributed_data_parallel_hook
 

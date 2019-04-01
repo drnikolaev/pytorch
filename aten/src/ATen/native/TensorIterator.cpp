@@ -6,19 +6,6 @@
 
 namespace at {
 
-struct DimCounter {
-  DimCounter(IntList shape, Range range);
-
-  void increment(const std::array<int64_t, 2>& step);
-  bool is_done() const;
-  std::array<int64_t, 2> max_step() const;
-
-  IntList shape;
-  Range range;
-  DimVector values;
-  int64_t offset;
-};
-
 using DimMask = TensorIterator::DimMask;
 using PtrVector = TensorIterator::PtrVector;
 using loop_t = TensorIterator::loop_t;
@@ -35,14 +22,14 @@ void TensorIterator::reorder_dimensions() {
 
   // returns 1 if the dim0 should come after dim1, -1 if dim0 should come
   // before dim1, and 0 if the comparison is ambiguous.
-  auto should_swap = [&](int dim0, int dim1) {
+  auto should_swap = [&](size_t dim0, size_t dim1) {
     int ret = 0;
     for (int arg = 0; arg < ntensors(); arg++) {
       if (operands_[arg].stride_bytes.empty()) {
         continue;
       }
-      int stride0 = operands_[arg].stride_bytes[dim0];
-      int stride1 = operands_[arg].stride_bytes[dim1];
+      int64_t stride0 = operands_[arg].stride_bytes[dim0];
+      int64_t stride1 = operands_[arg].stride_bytes[dim1];
       if (operands_[arg].is_output) {
         // move reduced dimensions to the front
         if ((stride0 == 0) != (stride1 == 0)) {
@@ -86,7 +73,7 @@ compute_result_type(at::ArrayRef<OperandInfo> operands, const F& predicate) {
   for (auto& op : operands) {
     if (!op.tensor.defined()) continue;
     if (!predicate(op.tensor)) continue;
-    auto dtype = op.tensor.type().scalarType();;
+    auto dtype = op.tensor.scalar_type();;
     result_type = (result_type == ScalarType::Undefined
         ? dtype
         : promoteTypes(result_type, dtype));
@@ -97,21 +84,56 @@ compute_result_type(at::ArrayRef<OperandInfo> operands, const F& predicate) {
   return std::make_tuple(result_type, backend);
 }
 
-static bool needs_cast(const Tensor& tensor, const Type& dst_type) {
-  if (!tensor.defined() || dst_type == tensor.type()) {
-    return false;
+void TensorIterator::compute_types() {
+  bool missing_dtypes = false;
+  for (auto& op : operands_) {
+    if (!op.tensor.defined() && !op.type) {
+      missing_dtypes = true;
+    }
   }
-  if (dst_type.device_type() == DeviceType::CUDA &&
-      tensor.type().device_type() == DeviceType::CPU &&
-      tensor.dim() == 0) {
-    // zero-dim CPU tensors used in CUDA operations can be used directly without
-    // casting
-    return false;
+
+  if (missing_dtypes || compute_common_dtype_) {
+    auto& type = compute_common_type();
+    for (auto& op : operands_) {
+      auto& op_tensor_type = at::globalContext().getNonVariableType(op.tensor.type().backend(), op.tensor.scalar_type());
+      if (!op.type) {
+        op.type = &type;
+      } else if (compute_common_dtype_ && op.type != &type) {
+        if (allow_cpu_scalars_ && op.tensor.defined() && op.tensor.dim() == 0 &&
+            type.device_type() == kCUDA && op_tensor_type.device_type() == kCPU) {
+          // don't cast CPU scalars in CUDA ops that directly support them
+          op.type = &op_tensor_type;
+        } else if (promote_gpu_output_dtypes_ && op.tensor.defined() &&
+            !op.is_output && op_tensor_type.scalarType() == kHalf &&
+            type.scalarType() == kFloat && type.device_type() == kCUDA &&
+            op_tensor_type.device_type() == kCUDA) {
+          // allow input tensor type upcasting for fp16 to fp32 in fused kernel
+          // on GPU
+          op.type = &op_tensor_type;
+        } else {
+          op.type = &type;
+        }
+      }
+    }
   }
-  return true;
+
+  for (auto& op : operands_) {
+    auto& op_tensor_type = at::globalContext().getNonVariableType(op.tensor.type().backend(), op.tensor.scalar_type());
+    if (op.tensor.defined() && op_tensor_type != *op.type) {
+      if (op.is_output) {
+        AT_ERROR("output with type ", op_tensor_type.toString(),
+                 " doesn't match the desired type ", op.type->toString());
+      } else if (op.tensor.dim() == 0) {
+        op.tensor = op.tensor.to(*op.type);
+      } else {
+        AT_ERROR("expected type ", op.type->toString(), " but got ",
+            op_tensor_type.toString());
+      }
+    }
+  }
 }
 
-void TensorIterator::compute_common_type() {
+Type& TensorIterator::compute_common_type() {
   // See [Result type computation] in TensorIterator.h
   auto result_type = ScalarType::Undefined;
   auto backend = Backend::Undefined;
@@ -132,18 +154,7 @@ void TensorIterator::compute_common_type() {
   AT_ASSERT(result_type != ScalarType::Undefined);
   AT_ASSERT(backend != Backend::Undefined);
 
-  auto& type = at::globalContext().getNonVariableType(backend, result_type);
-
-  for (auto& op : operands_) {
-    if (!op.type) {
-      op.type = &type;
-      op.needs_cast = needs_cast(op.tensor, type);
-      if (op.needs_cast && op.tensor.dim() == 0 && !op.is_output) {
-        op.tensor = op.tensor.toType(type);
-        op.needs_cast = false;
-      }
-    }
-  }
+  return at::globalContext().getNonVariableType(backend, result_type);
 }
 
 DimVector TensorIterator::compatible_stride(int element_size) const {
@@ -156,7 +167,7 @@ DimVector TensorIterator::compatible_stride(int element_size) const {
   return stride;
 }
 
-DimVector TensorIterator::invert_perm(IntList input) const {
+DimVector TensorIterator::invert_perm(IntArrayRef input) const {
   // Invert the permutation caused by reorder_dimensions. This is not valid
   // after coalesce_dimensions is called.
   AT_ASSERT(!has_coalesced_dimensions_);
@@ -171,7 +182,8 @@ void TensorIterator::allocate_outputs() {
   for (int i = 0; i < num_outputs_; i++) {
     auto& op = operands_[i];
     if (!op.tensor.defined()) {
-      int element_size = op.type->elementSizeInBytes();
+      AT_ASSERTM(op.type, "no type for operand", i);
+      int element_size = op.type->typeMeta().itemsize();
       op.stride_bytes = compatible_stride(element_size);
 
       auto tensor_shape = invert_perm(shape_);
@@ -254,7 +266,7 @@ DimVector TensorIterator::get_dim_strides(int dim) const {
   return inner_strides;
 }
 
-SmallVector<char*, 4> TensorIterator::get_data_ptrs(ArrayRef<char*> base, IntList counter) const {
+SmallVector<char*, 4> TensorIterator::get_data_ptrs(ArrayRef<char*> base, IntArrayRef counter) const {
   auto ptrs = SmallVector<char*, 4>(base);
   for (int dim = 0; dim < ndim(); dim++) {
     int64_t value = counter[dim];
@@ -282,10 +294,10 @@ bool TensorIterator::is_dim_reduced(int dim) const {
   return false;
 }
 
-void TensorIterator::permute_dimensions(IntList perm) {
+void TensorIterator::permute_dimensions(IntArrayRef perm) {
   AT_ASSERT(perm.size() == ndim());
 
-  auto reorder = [perm](IntList data) {
+  auto reorder = [perm](IntArrayRef data) {
     auto res = DimVector(data.size(), 0);
     for (size_t i = 0; i < perm.size(); i++) {
       res[i] = data[perm[i]];
@@ -322,7 +334,7 @@ int TensorIterator::num_reduce_dims() const {
   return count;
 }
 static loop2d_t loop_wrapper(const loop_t& loop) {
-  return [loop](int ntensor, char** base, const int64_t* strides, int64_t size0, int64_t size1) {
+  return [&loop](int ntensor, char** base, const int64_t* strides, int64_t size0, int64_t size1) {
     auto data = PtrVector(base, base + ntensor);
     const int64_t* outer_strides = &strides[ntensor];
 
@@ -369,6 +381,9 @@ void TensorIterator::serial_for_each(const loop_t& loop, Range range) const {
 }
 
 void TensorIterator::serial_for_each(const loop2d_t& loop, Range range) const {
+  if (range.size() == 0) {
+    return;
+  }
   auto strides = get_strides();
   while (strides.size() < 2 * ntensors()) {
     strides.push_back(0);
@@ -382,7 +397,7 @@ void TensorIterator::serial_for_each(const loop2d_t& loop, Range range) const {
     auto counter = DimCounter(shape_, range);
     while (!counter.is_done()) {
       auto ptrs = get_data_ptrs(base_ptrs, counter.values);
-      auto step = counter.max_step();
+      auto step = counter.max_2d_step();
       loop(ntensors(), ptrs.data(), strides.data(), step[0], step[1]);
       counter.increment(step);
     }
@@ -405,7 +420,7 @@ bool TensorIterator::is_scalar(int arg) const {
 }
 
 bool TensorIterator::is_cpu_scalar(int arg) const {
-  return is_scalar(arg) && operands_[arg].tensor.type().backend() == at::Backend::CPU;
+  return is_scalar(arg) && operands_[arg].tensor.type().device_type() == kCPU;
 }
 
 void* TensorIterator::data_ptr(int arg) const {
@@ -416,7 +431,7 @@ void TensorIterator::remove_operand(int arg) {
   operands_.erase(operands_.begin() + arg);
 }
 
-void TensorIterator::replace_operand(int arg, void* data, IntList stride) {
+void TensorIterator::replace_operand(int arg, void* data, IntArrayRef stride) {
   operands_[arg].data = data;
   operands_[arg].stride_bytes = stride;
 }
@@ -440,6 +455,16 @@ void TensorIterator::narrow(int dim, int64_t start, int64_t size) {
   }
 }
 
+void TensorIterator::select_all_keeping_dim(int start_dim, IntArrayRef indices) {
+  AT_ASSERT(start_dim <= ndim());
+  for (int i = start_dim; i < ndim(); ++i) {
+    for (auto& op : operands_) {
+      op.data = ((char*)op.data) + op.stride_bytes[i] * indices[i - start_dim];
+    }
+    shape_[i] = 1;
+  }
+}
+
 std::unique_ptr<TensorIterator> TensorIterator::binary_op(Tensor& out, const Tensor& a, const Tensor& b) {
   auto builder = TensorIterator::Builder();
   if (a.device().is_cuda() && b.device().is_cuda()) {
@@ -450,6 +475,14 @@ std::unique_ptr<TensorIterator> TensorIterator::binary_op(Tensor& out, const Ten
   builder.add_output(out);
   builder.add_input(a);
   builder.add_input(b);
+  builder.iter_->allow_cpu_scalars_ = true;
+  return builder.build();
+}
+
+std::unique_ptr<TensorIterator> TensorIterator::unary_op(Tensor& out, const Tensor& a) {
+  auto builder = TensorIterator::Builder();
+  builder.add_output(out);
+  builder.add_input(a);
   return builder.build();
 }
 
@@ -458,7 +491,9 @@ std::unique_ptr<TensorIterator> TensorIterator::reduce_op(Tensor& out, const Ten
   auto builder = TensorIterator::Builder();
   builder.add_output(out);
   builder.add_input(a);
+  builder.iter_->promote_gpu_output_dtypes_ = true;
   builder.iter_->resize_outputs_ = false;
+  builder.iter_->is_reduction_ = true;
   return builder.build();
 }
 
@@ -485,7 +520,7 @@ void TensorIterator::compute_shape() {
     // For now, don't include output tensors that are not also input tensors.
     // This preserves the legacy behavior where torch.add(..., out=dst) resizes
     // the destination tensor.
-    if (op.is_output && !op.is_read_write) continue;
+    if (resize_outputs_ && op.is_output && !op.is_read_write) continue;
 
     auto shape = op.tensor.sizes();
     if (shape_.empty()) {
@@ -501,24 +536,26 @@ void TensorIterator::compute_shape() {
   // outputs.
   for (int i = 0; i < num_outputs_; i++) {
     auto& tensor = operands_[i].tensor;
-    if (resize_outputs_ && tensor.defined() && !tensor.sizes().equals(shape_)) {
-      if (!operands_[i].is_read_write) {
+    if (tensor.defined() && !tensor.sizes().equals(shape_)) {
+      if (resize_outputs_ && !operands_[i].is_read_write) {
         // Preserve legacy resizing behavior of out=... arguments
         // TODO: issue warning
         tensor.resize_(shape_);
         continue;
       }
-      AT_ERROR("output with shape ", tensor.sizes(), " doesn't match the broadcast shape ",
-               shape_);
+      if (!is_reduction_) {
+        AT_ERROR("output with shape ", tensor.sizes(), " doesn't match the broadcast shape ",
+                 shape_);
+      }
     }
   }
 }
 
-static DimVector compute_stride(const Tensor& tensor, IntList shape) {
+static DimVector compute_stride(const Tensor& tensor, IntArrayRef shape) {
   int ndim = shape.size();
   auto original_shape = tensor.sizes();
   auto original_stride = tensor.strides();
-  auto element_size_in_bytes = tensor.type().elementSizeInBytes();
+  auto element_size_in_bytes = tensor.element_size();
 
   auto stride = DimVector(ndim, 0);
   auto offset = ndim - original_shape.size();
@@ -536,15 +573,6 @@ void TensorIterator::compute_strides() {
   for (auto& op : operands_) {
     if (op.tensor.defined()) {
       op.stride_bytes = compute_stride(op.tensor, shape_);
-    }
-  }
-}
-
-void TensorIterator::check_type_conversions() {
-  for (auto& op : operands_) {
-    if (op.needs_cast) {
-      AT_ERROR("TensorIterator expected type ", type().toString(), " but got ",
-          op.tensor.type().toString());
     }
   }
 }
@@ -574,6 +602,7 @@ std::unique_ptr<TensorIterator> TensorIterator::split(int dim) {
   auto copy_size = shape_[dim] / 2;
   auto this_size = shape_[dim] - copy_size;
   copy->narrow(dim, 0, copy_size);
+  copy->final_output_ &= !overlaps;
   this->narrow(dim, copy_size, this_size);
   this->accumulate_ |= overlaps;
 
@@ -612,7 +641,7 @@ std::unique_ptr<TensorIterator> TensorIterator::Builder::build() {
   // re-order dimensions to improve coalescing
   iter_->reorder_dimensions();
   // compute the result dtype and backend
-  iter_->compute_common_type();
+  iter_->compute_types();
   // allocate the output tensor if it's not provided
   iter_->allocate_outputs();
   // coalesce adjacent dimensions when possible
@@ -622,8 +651,6 @@ std::unique_ptr<TensorIterator> TensorIterator::Builder::build() {
     AT_ASSERT(op.tensor.defined());
     op.data = op.tensor.data_ptr();
   }
-
-  iter_->check_type_conversions();
 
   return std::move(iter_);
 }
@@ -659,7 +686,7 @@ SplitUntil32Bit::iterator SplitUntil32Bit::end() const {
   return SplitUntil32Bit::iterator();
 }
 
-DimCounter::DimCounter(IntList shape, Range range)
+DimCounter::DimCounter(IntArrayRef shape, Range range)
   : shape(shape)
   , range(range)
   , values(shape.size(), 0)
@@ -668,8 +695,10 @@ DimCounter::DimCounter(IntList shape, Range range)
   int64_t ndim = values.size();
   for (int dim = 0; dim < ndim; dim++) {
     int64_t size = shape[dim];
-    values[dim] = linear_offset % size;
-    linear_offset /= size;
+    if (size > 0) {
+      values[dim] = linear_offset % size;
+      linear_offset /= size;
+    }
   }
   AT_ASSERT(linear_offset == 0);
 }
@@ -704,7 +733,7 @@ void DimCounter::increment(const std::array<int64_t, 2>& step) {
   AT_ASSERT(overflow == 0 || overflow == 1);
 }
 
-std::array<int64_t, 2> DimCounter::max_step() const {
+std::array<int64_t, 2> DimCounter::max_2d_step() const {
   int64_t step0 = std::min(shape[0] - values[0], range.end - offset);
   int64_t step1 = 1;
   if (step0 == shape[0] && shape.size() >= 1) {

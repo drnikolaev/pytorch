@@ -5,13 +5,14 @@
 
 #include <ATen/ATen.h>
 
-#include "torch/csrc/autograd/python_variable.h"
+#include <torch/csrc/autograd/python_variable.h>
 
 namespace torch { namespace nn {
 
 inline bool check_type(PyObject* obj, at::TypeID typeID) {
   if (THPVariable_Check(obj)) {
-    return ((THPVariable*)obj)->cdata.data().type().ID() == typeID;
+    auto& tensor = ((THPVariable*)obj)->cdata;
+    return at::globalContext().getNonVariableType(tensor.type().backend(), tensor.scalar_type()).ID() == typeID;
   }
   return false;
 }

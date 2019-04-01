@@ -20,7 +20,7 @@ struct Variable;
 using at::Context;
 using at::Device;
 using at::Generator;
-using at::IntList;
+using at::IntArrayRef;
 using at::Scalar;
 using at::ScalarType;
 using at::SparseTensorRef;
@@ -38,14 +38,11 @@ struct TORCH_API VariableType final : public at::TypeDefault {
   at::Backend backend() const override;
   at::Allocator* allocator() const override;
   at::Device getDeviceFromPtr(void * data) const override;
-  Storage storage(bool resizable = false) const override;
-  Storage storage(size_t size, bool resizable = false) const override;
   Storage storageFromBlob(void * data, int64_t size, const std::function<void(void*)> & deleter) const override;
   Storage storageWithAllocator(int64_t size, at::Allocator* allocator) const override;
   std::unique_ptr<at::Generator> generator() const override;
   const char * toString() const override;
   at::TypeID ID() const override;
-  size_t elementSizeInBytes() const override;
   at::Type & toBackend(at::Backend b) const override;
   at::Type & toScalarType(at::ScalarType s) const override;
   Storage unsafeStorageFromTH(void * th_pointer, bool retain) const override;
@@ -55,9 +52,6 @@ struct TORCH_API VariableType final : public at::TypeDefault {
   static bool isVariableType(const at::Type& type);
   static std::vector<at::Type*> allCUDATypes();
   static std::vector<at::Type*> allCPUTypes();
-
-  Tensor & s_copy_(Tensor & self, const Tensor & src, bool non_blocking) const override;
-  Tensor & _s_copy_from(const Tensor & self, Tensor & dst, bool non_blocking) const override;
 
   void backward(
       Tensor& self,

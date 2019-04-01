@@ -9,6 +9,12 @@
 
 namespace caffe2 {
 
+enum ConvAlgorithm {
+  CONV_ALGORITHM_AUTO = 0,
+  CONV_ALGORITHM_WINOGRAD = 1,
+  CONV_ALGORITHM_MAX = CONV_ALGORITHM_WINOGRAD + 1
+};
+
 #define USE_IDEEP_DEF_ALIASES()                                                \
   using itensor = ideep::tensor;                                               \
   using iformat = ideep::format;                                               \

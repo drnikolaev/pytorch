@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <c10/util/tempfile.h>
+
 #include <torch/nn/modules/functional.h>
 #include <torch/nn/modules/linear.h>
 #include <torch/nn/modules/sequential.h>
@@ -54,7 +56,7 @@ TEST(SerializeTest, BasicToFile) {
 
   auto x = torch::randn({5, 5});
 
-  auto tempfile = torch::utils::make_tempfile();
+  auto tempfile = c10::make_tempfile();
   torch::save(x, tempfile.name);
 
   torch::Tensor y;
@@ -135,7 +137,7 @@ TEST(SerializeTest, XOR) {
     epoch++;
   }
 
-  auto tempfile = torch::utils::make_tempfile();
+  auto tempfile = c10::make_tempfile();
   torch::save(model, tempfile.name);
   torch::load(model2, tempfile.name);
 
@@ -149,7 +151,7 @@ TEST(SerializeTest, Optim) {
   auto model3 = Linear(5, 2);
 
   // Models 1, 2, 3 will have the same parameters.
-  auto model_tempfile = torch::utils::make_tempfile();
+  auto model_tempfile = c10::make_tempfile();
   torch::save(model1, model_tempfile.name);
   torch::load(model2, model_tempfile.name);
   torch::load(model3, model_tempfile.name);
@@ -194,7 +196,7 @@ TEST(SerializeTest, Optim) {
   // Do 2 steps of model 3 while saving the optimizer
   step(optim3, model3);
 
-  auto optim_tempfile = torch::utils::make_tempfile();
+  auto optim_tempfile = c10::make_tempfile();
   torch::save(optim3, optim_tempfile.name);
   torch::load(optim3_2, optim_tempfile.name);
   step(optim3_2, model3);
@@ -215,9 +217,15 @@ TEST(SerializeTest, Optim) {
 TEST(SerializeTest, XOR_CUDA) {
   torch::manual_seed(0);
   // We better be able to save and load a XOR model!
-  auto getLoss = [](Sequential model, uint32_t batch_size) {
+  auto getLoss = [](Sequential model,
+                    uint32_t batch_size,
+                    bool is_cuda = false) {
     auto inputs = torch::empty({batch_size, 2});
     auto labels = torch::empty({batch_size});
+    if (is_cuda) {
+      inputs = inputs.cuda();
+      labels = labels.cuda();
+    }
     for (size_t i = 0; i < batch_size; i++) {
       inputs[i] = torch::randint(2, {2}, torch::kInt64);
       labels[i] = inputs[i][0].item<int64_t>() ^ inputs[i][1].item<int64_t>();
@@ -247,7 +255,7 @@ TEST(SerializeTest, XOR_CUDA) {
     epoch++;
   }
 
-  auto tempfile = torch::utils::make_tempfile();
+  auto tempfile = c10::make_tempfile();
   torch::save(model, tempfile.name);
   torch::load(model2, tempfile.name);
 
@@ -255,10 +263,44 @@ TEST(SerializeTest, XOR_CUDA) {
   ASSERT_LT(loss.item<float>(), 0.1);
 
   model2->to(torch::kCUDA);
-  auto tempfile2 = torch::utils::make_tempfile();
+  loss = getLoss(model2, 100, true);
+  ASSERT_LT(loss.item<float>(), 0.1);
+
+  auto tempfile2 = c10::make_tempfile();
   torch::save(model2, tempfile2.name);
   torch::load(model3, tempfile2.name);
 
-  loss = getLoss(model3, 100);
+  loss = getLoss(model3, 100, true);
   ASSERT_LT(loss.item<float>(), 0.1);
+}
+
+TEST(
+    SerializeTest,
+    CanSerializeModulesWithIntermediateModulesWithoutParametersOrBuffers) {
+  struct C : torch::nn::Module {
+    C() {
+      register_buffer("foo", torch::ones(5, torch::kInt32));
+    }
+  };
+  struct B : torch::nn::Module {};
+  struct A : torch::nn::Module {
+    A() {
+      register_module("b", std::make_shared<B>());
+      register_module("c", std::make_shared<C>());
+    }
+  };
+  struct M : torch::nn::Module {
+    M() {
+      register_module("a", std::make_shared<A>());
+    }
+  };
+
+  auto out = std::make_shared<M>();
+  std::stringstream ss;
+  torch::save(out, ss);
+  auto in = std::make_shared<M>();
+  torch::load(in, ss);
+
+  const int output = in->named_buffers()["a.c.foo"].sum().item<int>();
+  ASSERT_EQ(output, 5);
 }

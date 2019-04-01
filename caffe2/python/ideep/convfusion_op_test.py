@@ -10,7 +10,7 @@ import copy
 import numpy as np
 from caffe2.proto import caffe2_pb2
 from caffe2.python import core, workspace
-from caffe2.python.transformations import optimizeForIDEEP
+from caffe2.python.transformations import optimizeForMKLDNN
 import caffe2.python.hypothesis_test_util as hu
 import caffe2.python.ideep_test_util as mu
 
@@ -103,7 +103,7 @@ class ConvFusionTest(hu.HypothesisTestCase):
         workspace.FeedBlob('b0', b, dc[1])
         net = core.Net("net")
         net.Proto().CopyFrom(old_net)
-        optimizeForIDEEP(net)
+        optimizeForMKLDNN(net)
         self.assertTrue(len(net.Proto().op) == 1)
         self.assertTrue(net.Proto().op[0].type == "ConvFusion")
         workspace.RunOperatorOnce(net.Proto().op[0])
@@ -125,10 +125,11 @@ class ConvFusionTest(hu.HypothesisTestCase):
            batch_size=st.integers(1, 3),
            use_bias=st.booleans(),
            group=st.integers(1, 1),
+           sum_add=st.sampled_from(["Sum", "Add"]),
            **mu.gcs)
     def test_convolution_sum_fusion(self, stride, pad, kernel, size,
                              input_channels, output_channels,
-                             batch_size, use_bias, group, gc, dc):
+                             batch_size, use_bias, group, sum_add, gc, dc):
         conv_S0 = core.CreateOperator(
             "Conv",
             ["SX0", "Sw0", "Sb0"] if use_bias else ["SX0", "Sw0"],
@@ -150,7 +151,7 @@ class ConvFusionTest(hu.HypothesisTestCase):
             device_option=dc[0]
         )
         sum = core.CreateOperator(
-            "Sum",
+            sum_add,
             ["S0", "Y0"],
             ["S0"],
             device_option=dc[0]
@@ -242,7 +243,7 @@ class ConvFusionTest(hu.HypothesisTestCase):
         workspace.FeedBlob('b0', b, dc[1])
         net = core.Net("net")
         net.Proto().CopyFrom(old_net)
-        optimizeForIDEEP(net)
+        optimizeForMKLDNN(net)
         self.assertTrue(len(net.Proto().op) == 2)
         self.assertTrue(net.Proto().op[1].type == "ConvFusion")
         workspace.RunNetOnce(net.Proto())
@@ -264,10 +265,11 @@ class ConvFusionTest(hu.HypothesisTestCase):
            batch_size=st.integers(1, 3),
            use_bias=st.booleans(),
            group=st.integers(1, 1),
+           sum_add=st.sampled_from(["Sum", "Add"]),
            **mu.gcs)
     def test_convolution_sum_relu_fusion(self, stride, pad, kernel, size,
                              input_channels, output_channels,
-                             batch_size, use_bias, group, gc, dc):
+                             batch_size, use_bias, group, sum_add, gc, dc):
         conv_S0 = core.CreateOperator(
             "Conv",
             ["SX0", "Sw0", "Sb0"] if use_bias else ["SX0", "Sw0"],
@@ -289,7 +291,7 @@ class ConvFusionTest(hu.HypothesisTestCase):
             device_option=dc[0]
         )
         sum = core.CreateOperator(
-            "Sum",
+            sum_add,
             ["S0", "Y0"],
             ["S0"],
             device_option=dc[0]
@@ -391,7 +393,7 @@ class ConvFusionTest(hu.HypothesisTestCase):
         workspace.FeedBlob('b0', b, dc[1])
         net = core.Net("net")
         net.Proto().CopyFrom(old_net)
-        optimizeForIDEEP(net)
+        optimizeForMKLDNN(net)
         self.assertTrue(len(net.Proto().op) == 2)
         self.assertTrue(net.Proto().op[1].type == "ConvFusion")
         workspace.RunNetOnce(net.Proto())
@@ -479,7 +481,7 @@ class ConvFusionTest(hu.HypothesisTestCase):
         workspace.FeedBlob('var', var, dc[1])
         net = core.Net("net")
         net.Proto().CopyFrom(old_net)
-        optimizeForIDEEP(net)
+        optimizeForMKLDNN(net)
         self.assertTrue(len(net.Proto().op) == 1)
         self.assertTrue(net.Proto().op[0].type == "Conv")
         workspace.RunOperatorOnce(net.Proto().op[0])
@@ -560,7 +562,7 @@ class ConvFusionTest(hu.HypothesisTestCase):
         workspace.FeedBlob('bias', bias, dc[1])
         net = core.Net("net")
         net.Proto().CopyFrom(old_net)
-        optimizeForIDEEP(net)
+        optimizeForMKLDNN(net)
         self.assertTrue(len(net.Proto().op) == 1)
         self.assertTrue(net.Proto().op[0].type == "Conv")
         workspace.RunOperatorOnce(net.Proto().op[0])

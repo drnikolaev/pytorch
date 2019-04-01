@@ -20,10 +20,16 @@ struct Argument {
       bool kwarg_only = false,
       c10::optional<AliasInfo> alias_info = c10::nullopt)
       : name_(std::move(name)),
-        type_(type ? type : DynamicType::get()),
+        type_(type ? type : TensorType::get()),
         N_(std::move(N)),
         default_value_(std::move(default_value)),
-        kwarg_only_(kwarg_only) {}
+        kwarg_only_(kwarg_only),
+        alias_info_(std::move(alias_info)) {
+          if (default_value_ && default_value_->isTensor()) {
+            auto t = default_value_->toTensor();
+            AT_ASSERT(!t.defined() || t.is_variable());
+          }
+        }
   const std::string& name() const {
     return name_;
   }
@@ -33,26 +39,19 @@ struct Argument {
   c10::optional<int32_t> N() const {
     return N_;
   }
-  c10::optional<IValue> default_value() const {
+  const c10::optional<IValue>& default_value() const {
     return default_value_;
   }
   bool kwarg_only() const {
     return kwarg_only_;
   }
-  const AliasInfo& alias_info() const {
-    if(!alias_info_) {
-      alias_info_ = createBlankAliasInfo(type_);
-    }
-    return *alias_info_;
+  const c10::optional<AliasInfo>& alias_info() const {
+    return alias_info_;
   }
+
 private:
-  static AliasInfo createBlankAliasInfo(TypePtr typ) {
-    auto contained = fmap(typ->containedTypes(), createBlankAliasInfo);
-    return AliasInfo({}, std::move(contained));
-  }
   std::string name_;
   TypePtr type_;
-  mutable c10::optional<AliasInfo> alias_info_;
   // for list types, an optional statically known length for the list
   // e.g. for int[3]: type = ListType::ofInts(), N = 3
   // If present, this will allow scalars to be broadcast to this length to
@@ -62,24 +61,46 @@ private:
   c10::optional<IValue> default_value_;
   // is this only specifyable as a keyword argument?
   bool kwarg_only_;
+  c10::optional<AliasInfo> alias_info_;
 };
+
+namespace detail {
+inline bool defaultValueEquals_(const c10::optional<IValue>& lhs, const c10::optional<IValue>& rhs) {
+  if (lhs.has_value()) {
+    return rhs.has_value() && shallowEquals(*lhs, *rhs);
+  } else {
+    return !rhs.has_value();
+  }
+}
+}
+
+inline bool operator==(const Argument& lhs, const Argument& rhs) {
+  return lhs.name() == rhs.name()
+          && lhs.type() == rhs.type()
+          && lhs.N() == rhs.N()
+          && detail::defaultValueEquals_(lhs.default_value(), rhs.default_value())
+          && lhs.kwarg_only() == rhs.kwarg_only()
+          && lhs.alias_info() == rhs.alias_info();
+}
 
 struct FunctionSchema {
   FunctionSchema(
       std::string name,
+      std::string overload_name,
       std::vector<Argument> arguments,
       std::vector<Argument> returns,
       bool is_vararg = false,
-      bool is_varret = false,
-      std::vector<Symbol> writes = {})
+      bool is_varret = false)
       : name_(std::move(name)),
+        overload_name_(std::move(overload_name)),
         arguments_(std::move(arguments)),
         returns_(std::move(returns)),
         is_vararg_(is_vararg),
-        is_varret_(is_varret),
-        writes_(std::move(writes)) {}
+        is_varret_(is_varret) {}
+
   FunctionSchema(
       Symbol name,
+      std::string overload_name,
       std::vector<Argument> arguments,
       std::vector<Argument> returns,
       bool is_vararg = false,
@@ -87,6 +108,7 @@ struct FunctionSchema {
       std::vector<std::string> writes = {})
       : FunctionSchema(
             name.toQualString(),
+            std::move(overload_name),
             std::move(std::move(arguments)),
             std::move(std::move(returns)),
             is_vararg,
@@ -94,6 +116,7 @@ struct FunctionSchema {
 
 private:
   const std::string name_;
+  const std::string overload_name_;
   const std::vector<Argument> arguments_;
   const std::vector<Argument> returns_;
   // if true then this schema takes an arbitrary number of additional arguments
@@ -103,20 +126,18 @@ private:
   const bool is_vararg_;
   const bool is_varret_;
 
-  // set of alias sets in Arguments that are written to by this op
-  const std::vector<Symbol> writes_;
 public:
   const std::string& name() const {
     return name_;
+  }
+  const std::string& overload_name() const {
+    return overload_name_;
   }
   const std::vector<Argument>& arguments() const {
     return arguments_;
   }
   const std::vector<Argument>& returns() const {
     return returns_;
-  }
-  const std::vector<Symbol>& writes() const {
-    return writes_;
   }
   bool is_vararg() const {
     return is_vararg_;
@@ -125,7 +146,11 @@ public:
     return is_varret_;
   }
   bool is_mutable() const {
-    return writes().size() > 0;
+    return std::any_of(
+        arguments_.cbegin(), arguments_.cend(), [](const Argument& arg) {
+          const auto& aliasInfo = arg.alias_info();
+          return aliasInfo && aliasInfo.value().isWrite();
+        });
   }
   c10::optional<int> argumentIndexWithName(const std::string& name) const {
     for(size_t i = 0; i < arguments().size(); ++i) {
@@ -134,9 +159,20 @@ public:
     }
     return c10::nullopt;
   }
-
- private:
 };
+
+inline bool operator==(const FunctionSchema& lhs, const FunctionSchema& rhs) {
+  return lhs.name() == rhs.name()
+      && lhs.overload_name() == rhs.overload_name()
+      && lhs.arguments() == rhs.arguments()
+      && lhs.returns() == rhs.returns()
+      && lhs.is_vararg() == rhs.is_vararg()
+      && lhs.is_varret() == rhs.is_varret();
+}
+
+inline bool operator!=(const FunctionSchema& lhs, const FunctionSchema& rhs) {
+  return !(lhs == rhs);
+}
 
 // for debugging, make sure we can describe the call site
 inline std::ostream& operator<<(std::ostream& out, const Argument& arg) {
@@ -178,6 +214,12 @@ inline std::ostream& operator<<(std::ostream& out, const FunctionSchema& schema)
     out << ")";
   }
   return out;
+}
+
+inline std::string toString(const FunctionSchema& schema) {
+  std::ostringstream str;
+  str << schema;
+  return str.str();
 }
 
 } // namespace c10

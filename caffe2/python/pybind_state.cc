@@ -6,7 +6,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "caffe2/contrib/script/compiler.h"
 #include "caffe2/core/asan.h"
 #include "caffe2/core/blob_stats.h"
 #include "caffe2/core/db.h"
@@ -14,6 +13,7 @@
 #include "caffe2/core/operator.h"
 #include "caffe2/core/stats.h"
 #include "caffe2/core/transform.h"
+#include "caffe2/observers/profile_observer.h"
 #include "caffe2/observers/runcnt_observer.h"
 #include "caffe2/observers/time_observer.h"
 #include "caffe2/onnx/backend.h"
@@ -25,12 +25,12 @@
 #include "caffe2/opt/onnxifi_transformer.h"
 #include "caffe2/opt/optimize_ideep.h"
 #include "caffe2/opt/passes.h"
-#include "caffe2/opt/sink.h"
 #include "caffe2/predictor/predictor.h"
 #include "caffe2/python/pybind_state_registry.h"
 #include "caffe2/utils/cpuid.h"
 #include "caffe2/utils/proto_convert.h"
 #include "caffe2/utils/string_utils.h"
+#include "torch/csrc/autograd/variable.h"
 
 namespace caffe2 {
 namespace python {
@@ -333,6 +333,19 @@ void addObjectMethods(py::module& m) {
                 blob.meta().name());
             return fetcher->Fetch(blob);
           })
+      .def("is_tensor", [](Blob* blob) { return blob->IsType<Tensor>(); })
+      // return any device Tensor
+      .def(
+          "as_tensor",
+          [](Blob* blob) {
+            CAFFE_ENFORCE(
+                blob->IsType<Tensor>(),
+                "Passed in blob doesn't contain Tensor and instead has ",
+                blob->meta());
+            return py::cast(&blob->Get<Tensor>());
+          },
+          py::return_value_policy::reference_internal)
+      // legacy API that resets tensor to CPUTensor if it's not already
       .def(
           "tensor",
           [](Blob* blob) { return py::cast(BlobGetMutableTensor(blob, CPU)); },
@@ -355,7 +368,7 @@ void addObjectMethods(py::module& m) {
               auto feeder = CreateFeeder(option.device_type());
               CAFFE_ENFORCE(
                   feeder, "Unknown device type encountered in FeedBlob.");
-              feeder->Feed(option, array, blob);
+              feeder->Feed(option, array, blob, true); /* default to inplace feed */
               return true;
             }
 #else
@@ -371,7 +384,14 @@ void addObjectMethods(py::module& m) {
           },
           "Feed an input array or string, with the (optional) DeviceOption",
           py::arg("arg"),
-          py::arg("device_option") = py::none());
+          py::arg("device_option") = py::none())
+      .def("_wrap_tensor_impl", [](Blob* blob, void* ptr) {
+        auto p = c10::intrusive_ptr<c10::TensorImpl, at::UndefinedTensorImpl>::
+            unsafe_reclaim_from_nonowning(static_cast<c10::TensorImpl*>(ptr));
+        AT_CHECK(p.defined(), "Can't wrap undefined tensor");
+        auto at_tensor = at::Tensor::wrap_tensor_impl(std::move(p));
+        BlobSetTensor(blob, Tensor(std::move(at_tensor)));
+      });
 
   py::class_<DLPackWrapper<CPUContext>>(m, "DLPackTensorCPU")
       .def_property_readonly(
@@ -432,8 +452,8 @@ void addObjectMethods(py::module& m) {
               CAFFE_THROW(
                   "Unexpected type of argument -- expected numpy array");
             }
-            TensorFeeder<CPUContext>().FeedTensor(
-                DeviceOption{}, reinterpret_cast<PyArrayObject*>(obj.ptr()), t);
+            *t = TensorFeeder<CPUContext>().FeedTensor(
+                DeviceOption{}, reinterpret_cast<PyArrayObject*>(obj.ptr()));
 #else
             CAFFE_THROW("Caffe2 compiled without NumPy support.");
 #endif // USE_NUMPY
@@ -459,6 +479,15 @@ void addObjectMethods(py::module& m) {
           },
           "Initialize this tensor to given shape and data type. "
           "Fail if the given data type cannot be accessed from python.")
+      .def(
+        "_tensor_impl_raw_handle",
+        [](TensorCPU* t) -> void* {
+          auto p = t->getIntrusivePtr();
+          // We return a raw non-owning pointer here, we rely on surrounding
+          // code to keep the original tensor alive
+          return p.get();
+        }
+      )
       .def_property_readonly(
           "_shape", [](const TensorCPU& t) { return t.sizes().vec(); })
       .def("_reshape", [](TensorCPU* t, std::vector<int64_t> dims) {
@@ -751,15 +780,15 @@ void addObjectMethods(py::module& m) {
             for (const auto pair : inputs) {
               const auto& name = pair.first;
               const auto& input = pair.second;
-              tensors_data.emplace(name, Tensor(CPU));
 #ifdef USE_NUMPY
               CAFFE_ENFORCE(
                   PyArray_Check(input.ptr()),
                   "Input must be of type numpy array.");
               PyArrayObject* array =
                   reinterpret_cast<PyArrayObject*>(input.ptr());
-              TensorFeeder<CPUContext>().FeedTensor(
-                  DeviceOption(), array, &tensors_data.at(name));
+              tensors_data.emplace(
+                  name,
+                  TensorFeeder<CPUContext>().FeedTensor(DeviceOption(), array));
 #else
               CAFFE_THROW("Caffe2 was compiled without NumPy support.");
 #endif // USE_NUMPY
@@ -777,9 +806,6 @@ void addObjectMethods(py::module& m) {
           [](caffe2::onnx::Caffe2BackendRep& instance,
              std::vector<py::object> inputs) -> std::vector<py::object> {
             std::vector<TensorCPU> tensors_data;
-            for (auto i = 0; i < inputs.size(); ++i) {
-              tensors_data.emplace_back(caffe2::CPU);
-            }
 #ifdef USE_NUMPY
             for (auto i = 0; i < inputs.size(); ++i) {
               auto input = inputs[i];
@@ -788,8 +814,8 @@ void addObjectMethods(py::module& m) {
                   "Input must be of type numpy array.");
               PyArrayObject* array =
                   reinterpret_cast<PyArrayObject*>(input.ptr());
-              TensorFeeder<CPUContext>().FeedTensor(
-                  DeviceOption(), array, &(tensors_data[i]));
+              tensors_data.push_back(
+                  TensorFeeder<CPUContext>().FeedTensor(DeviceOption(), array));
             }
 #else
             CAFFE_THROW("Caffe2 was compiled without NumPy support.");
@@ -890,9 +916,6 @@ void addObjectMethods(py::module& m) {
           [](Predictor& instance,
              std::vector<py::object> inputs) -> std::vector<py::object> {
             std::vector<Tensor> tensors_data;
-            for (auto i = 0; i < inputs.size(); ++i) {
-              tensors_data.emplace_back(CPU);
-            }
 #ifdef USE_NUMPY
             for (auto i = 0; i < inputs.size(); ++i) {
               auto input = inputs[i];
@@ -901,8 +924,8 @@ void addObjectMethods(py::module& m) {
                   "Input must be of type numpy array.");
               PyArrayObject* array =
                   reinterpret_cast<PyArrayObject*>(input.ptr());
-              TensorFeeder<CPUContext>().FeedTensor(
-                  DeviceOption(), array, &(tensors_data[i]));
+              tensors_data.push_back(
+                  TensorFeeder<CPUContext>().FeedTensor(DeviceOption(), array));
             }
 #else
             CAFFE_THROW("Caffe2 was compiled without NumPy support.");
@@ -924,14 +947,14 @@ void addObjectMethods(py::module& m) {
             for (const auto pair : inputs) {
               const auto& name = pair.first;
               const auto& input = pair.second;
-              tensors_data.emplace(name, Tensor(CPU));
               CAFFE_ENFORCE(
                   PyArray_Check(input.ptr()),
                   "Input must be of type numpy array.");
               PyArrayObject* array =
                   reinterpret_cast<PyArrayObject*>(input.ptr());
-              TensorFeeder<CPUContext>().FeedTensor(
-                  DeviceOption(), array, &tensors_data.at(name));
+              tensors_data.emplace(
+                  name,
+                  TensorFeeder<CPUContext>().FeedTensor(DeviceOption(), array));
             }
 #else
             CAFFE_THROW("Caffe2 was compiled without NumPy support.");
@@ -943,29 +966,6 @@ void addObjectMethods(py::module& m) {
               pyout.push_back(TensorFetcher().FetchTensor(t, true).obj);
             }
             return pyout;
-          });
-
-  py::class_<script::CompilationUnit>(m, "CompilationUnit")
-      .def(py::init<>())
-      .def("define", &script::CompilationUnit::define)
-      .def("get_proto", &script::CompilationUnit::getProto)
-      .def(
-          "create_net",
-          [](script::CompilationUnit* self, const std::string& name) {
-            auto net = self->createNet(gWorkspace, name);
-            CAFFE_ENFORCE(net);
-            return net;
-          })
-      .def(
-          "extern",
-          [](script::CompilationUnit* self,
-             const std::string& name,
-             py::object py_proto) {
-            py::bytes bytes = py_proto.attr("SerializeToString")();
-            std::unique_ptr<caffe2::NetDef> proto(new NetDef());
-            CAFFE_ENFORCE(ParseProtoFromLargeString(
-                bytes.cast<std::string>(), proto.get()));
-            self->defineExtern(name, std::move(proto));
           });
 }
 
@@ -1166,6 +1166,7 @@ void addGlobalMethods(py::module& m) {
     }                                                         \
   }
 
+        REGISTER_PYTHON_EXPOSED_OBSERVER(ProfileObserver);
         REGISTER_PYTHON_EXPOSED_OBSERVER(TimeObserver);
 #undef REGISTER_PYTHON_EXPOSED_OBSERVER
 
@@ -1634,10 +1635,12 @@ void addGlobalMethods(py::module& m) {
   m.def(
       "onnxifi",
       [](const py::bytes& pred_net_str,
-         const std::vector<std::string>& external_inputs,
          const std::unordered_map<std::string, std::vector<int>>& shapes,
-         bool infer_shapes,
-         bool debug_builder) -> py::bytes {
+         const std::vector<int>& black_list,
+         int max_batch_size,
+         int max_seq_size,
+         bool debug_builder,
+         bool use_onnx) -> py::bytes {
         caffe2::NetDef pred_net;
         CAFFE_ENFORCE(
             ParseProtoFromLargeString(
@@ -1648,13 +1651,18 @@ void addGlobalMethods(py::module& m) {
           tensor_shapes.emplace(
               it.first, CreateTensorShape(it.second, TensorProto::FLOAT));
         }
-        OnnxifiTransformer ts(infer_shapes, debug_builder);
-        ts.Transform(
-            GetCurrentWorkspace(),
-            &pred_net,
-            external_inputs,
-            tensor_shapes,
-            std::unordered_set<int>());
+        OnnxifiTransformerOptions opts;
+        opts.bound_shape_spec.max_batch_size = max_batch_size;
+        opts.bound_shape_spec.max_seq_size = max_seq_size;
+        opts.debug = debug_builder;
+        opts.use_onnx = use_onnx;
+        OnnxifiTransformer ts(opts);
+        Workspace* curr_ws = GetCurrentWorkspace();
+        std::unordered_set<int> blacklist_set(
+            black_list.begin(), black_list.end());
+        auto weight_names = curr_ws->Blobs();
+        ts.transform(
+            curr_ws, &pred_net, weight_names, tensor_shapes, blacklist_set);
         std::string pred_net_str2;
         pred_net.SerializeToString(&pred_net_str2);
         return py::bytes(pred_net_str2);
@@ -1683,12 +1691,12 @@ void addGlobalMethods(py::module& m) {
   // into a python interface in transformations.py
   // Prefix the transformation with transform_ to avoid clobbering the
   // function namespace.
-  m.def("transform_optimizeForIDEEP", [](py::bytes def, bool training_mode) {
+  m.def("transform_optimizeForMKLDNN", [](py::bytes def, bool training_mode) {
     caffe2::NetDef proto;
     CAFFE_ENFORCE(ParseProtoFromLargeString(def.cast<std::string>(), &proto));
 
     auto nn = caffe2::convertToNNModule(proto);
-    opt::OptimizeForIdeep(&nn, gWorkspace, training_mode);
+    opt::OptimizeForMkldnn(&nn, gWorkspace, training_mode);
     auto new_proto = caffe2::convertToCaffe2Proto(nn, proto);
 
     std::string out;
@@ -1729,19 +1737,6 @@ void addGlobalMethods(py::module& m) {
 
     auto nn = caffe2::convertToNNModule(proto);
     opt::fuseNNPACKConvRelu(&nn);
-    auto new_proto = caffe2::convertToCaffe2Proto(nn, proto);
-
-    std::string out;
-    new_proto.SerializeToString(&out);
-    return py::bytes(out);
-  });
-
-  m.def("transform_sinkMaxPool", [](py::bytes def) {
-    caffe2::NetDef proto;
-    CAFFE_ENFORCE(ParseProtoFromLargeString(def.cast<std::string>(), &proto));
-
-    auto nn = caffe2::convertToNNModule(proto);
-    opt::sinkMaxPool(&nn);
     auto new_proto = caffe2::convertToCaffe2Proto(nn, proto);
 
     std::string out;

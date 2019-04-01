@@ -1166,6 +1166,11 @@ Sparse functions
 
 .. autofunction:: embedding_bag
 
+:hidden:`one_hot`
+~~~~~~~~~~~~~~~~~
+
+.. autofunction:: one_hot
+
 Distance functions
 ----------------------------------
 

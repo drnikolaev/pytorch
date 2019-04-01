@@ -1,8 +1,8 @@
-#include "ATen/ATen.h"
-#include "ATen/AccumulateType.h"
-#include "ATen/TensorUtils.h"
-#include "ATen/cuda/CUDAContext.h"
-#include "c10/util/Exception.h"
+#include <ATen/ATen.h>
+#include <ATen/AccumulateType.h>
+#include <ATen/TensorUtils.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/util/Exception.h>
 
 #include <THC/THCDeviceUtils.cuh>
 #include <THC/THCTensorMathReduce.cuh>
@@ -52,7 +52,7 @@ __global__ void embedding_backward_feature_kernel
     if(batch_start + tid < n)
       indices_batch[tid] = (int)indices[batch_start + tid];
 
-    int batch_end = batch_start + blockDim.x*blockDim.y < n ? 
+    int batch_end = batch_start + blockDim.x*blockDim.y < n ?
                     batch_start + blockDim.x*blockDim.y : n;
 
     // Loop over the batch of <= 1024 loaded indices in chunks of blockDim.y = 32
@@ -62,7 +62,7 @@ __global__ void embedding_backward_feature_kernel
       // leaders are done with their accumulates before other warps start loading again.
       __syncthreads();
 
-      int n_this_chunk = (batch_end - chunk_start) < blockDim.y ? 
+      int n_this_chunk = (batch_end - chunk_start) < blockDim.y ?
                          (batch_end - chunk_start) : blockDim.y;
 
       int src_row = chunk_start + threadIdx.y;
@@ -243,7 +243,7 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
     dim3 block(WARP_SIZE, BLOCKDIMY);
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF
-      (grad.type(),
+      (grad.scalar_type(),
        "embedding_backward",
        [&]
        {
@@ -326,7 +326,7 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
   dim3 grid(THCCeilDiv(num_indices, (int64_t) 4), THCCeilDiv(stride, (int64_t) 128));
   dim3 block(32, 4);
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad.type(), "embedding_backward", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad.scalar_type(), "embedding_backward", [&] {
     embedding_backward_kernel<<<grid, block, 0, stream>>>(
       sorted_indices.data<int64_t>(),
       orig_indices.data<int64_t>(),
@@ -371,7 +371,7 @@ Tensor & embedding_renorm_cuda_(Tensor & self, const Tensor & indices,
   dim3 block(128);
   int dim = self.stride(0);
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(self.type(), "embedding_backward", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(self.scalar_type(), "embedding_backward", [&] {
     using accscalar_t = acc_type<scalar_t, true>;
     renorm_kernel<<<grid, block, 128 * sizeof(accscalar_t), stream>>>(
       self.data<scalar_t>(),
@@ -384,5 +384,6 @@ Tensor & embedding_renorm_cuda_(Tensor & self, const Tensor & indices,
 
   return self;
 }
+
 
 }}  // namespace at::native
