@@ -99,7 +99,7 @@ void index_kernel(TensorIterator& iter, IntArrayRef index_size, IntArrayRef inde
   });
 }
 
-void index_put_kernel(TensorIterator& iter, IntArrayRef index_size, IntArrayRef index_stride, bool accumulate) {
+void index_put_kernel(TensorIterator& iter, IntArrayRef index_size, IntArrayRef index_stride, const Tensor & value, bool accumulate) {
   // NOTE: duplicate indices are only supported if accumulate is true.
   AT_DISPATCH_ALL_TYPES_AND(at::ScalarType::Half, iter.dtype(), "index_put", [&] {
     if (accumulate) {

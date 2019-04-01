@@ -451,7 +451,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   if (indices.size() > (size_t)self.dim()) {
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
   }
-  if (accumulate && self.type().device_type() == kCUDA) {
+  if (accumulate) {
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
@@ -459,7 +459,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   }
   auto info = make_info(self, indices);
   auto iter = make_index_put_iterator(info, value);
-  index_put_stub(iter->device_type(), *iter, info.indexed_sizes, info.indexed_strides, accumulate);
+  index_put_stub(value.device().type(), *iter, info.indexed_sizes, info.indexed_strides, value, accumulate);
   return self;
 }
 
