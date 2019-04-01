@@ -76,13 +76,11 @@ static std::vector<Tensor> expandByteTensors2(const Tensor & self, TensorList in
 //  transposeToFront(tensor, {nullptr, a, nullptr, b})
 // returns
 //  tensor.permute([1, 3, 0, 2]), {a, b, nullptr, nullptr}
-static Tensor
-flattenToFront(const Tensor& self, Tensor& self2, TensorList indices) {
-  std::vector<int64_t> dims;
+static std::tuple<Tensor, Tensor>
+flattenToFront(const Tensor & self, TensorList indices, std::vector<int64_t>& dims) {
   std::vector<Tensor> transposedIndices;
-//  dims.reserve(self.dim());
-  dims.reserve(indices.size());
-  for (int64_t i = 0; i < indices.size()/*self.dim()*/; i++) {
+  dims.reserve(self.dim());
+  for (int64_t i = 0; i < std::min<int64_t>(indices.size(), self.dim()); i++) {
     if (indices[i].defined()) {
       dims.push_back(i);
       transposedIndices.emplace_back(indices[i]);
@@ -91,13 +89,15 @@ flattenToFront(const Tensor& self, Tensor& self2, TensorList indices) {
   for (int64_t i = 0L; i < self.dim(); i++) {
     if (!indices[i].defined()) {
       dims.push_back(i);
-//      transposedIndices.emplace_back();
     }
   }
-  self2 = dims.size() > 1 ? self.permute(dims) : self;
-  self2 = self2.flatten(0L, dims.back());
-  return at::cat(transposedIndices);
-//  return torch::utils::flatten_dense_tensors(transposedIndices);
+  for (int64_t i = 0L; i < self.dim(); i++) {
+    if (std::find(dims.begin(), dims.end(), i) == dims.end()) {
+      dims.push_back(i);
+    }
+  }
+  return std::make_tuple(self.view({12,-1}), //permute(dims),//torch::utils::flatten_dense_tensors(transposedIndices));
+      std::move(at::stack(transposedIndices, 0)));
 }
 
 // TODO: this is cut&paste
@@ -175,14 +175,16 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
   checkScalarType("index_put_cuda_", indices_arg, kLong);
   checkSameGPU("index_put_cuda_", grad_arg, indices_arg);
 
-  int64_t padding_idx = -1L;
+  int padding_idx = -1;
 
-  Tensor self2;
-  auto indices = flattenToFront(self, self2, indices__);
-  auto num_indices = indices.numel();
-  auto grad = values.contiguous();//.reshape({num_indices, values.size(-1)});
+  std::vector<int64_t> dims;
+  Tensor self_;
+  Tensor indices;
+  std::tie(self_, indices) = flattenToFront(self, indices__, dims);
 
-  int64_t stride = self2.stride(0);
+  auto num_indices = indices[0].numel();
+  auto grad = values.contiguous().view({num_indices, values.size(-1)});
+  int64_t stride = self_.stride(0);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   auto sorted_indices = at::empty_like(indices);
@@ -217,25 +219,18 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
       sorted_indices.data<int64_t>(),
       orig_indices.data<int64_t>(),
       grad.data<scalar_t>(),
-      self2.data<scalar_t>(),
+      self_.data<scalar_t>(),
       num_indices,
       stride,
       padding_idx);
   });
   THCudaCheck(cudaGetLastError());
-  return self;
-}
+  self.copy_(self_.view({3,4,5}));
 
-//  std::cerr << "self" << std::endl;
+//  std::cerr << "self  --->>" << std::endl;
 //  print(std::cerr, self, 120);
 //  std::cerr << self.sizes() << std::endl << std::endl;
-//
-//  std::cerr << "indices" << std::endl;
-//  print(std::cerr, indices, 120);
-//  std::cerr << indices.sizes() << std::endl << std::endl;
-//
-//  std::cerr << "values" << std::endl;
-//  print(std::cerr, values, 120);
-//  std::cerr << values.sizes() << std::endl << std::endl;
+  return self;
+}
 
 }}  // namespace at::native

@@ -451,7 +451,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   if (indices.size() > (size_t)self.dim()) {
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
   }
-  if (accumulate/* && self.type().device_type() == kCUDA*/) {
+  if (accumulate) {
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
@@ -462,93 +462,6 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   index_put_stub(value.device().type(), *iter, info.indexed_sizes, info.indexed_strides, value, accumulate);
   return self;
 }
-
-#if false
-Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
-  if (indices.size() > (size_t)self.dim()) {
-    AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
-  }
-  if (accumulate && self.type().device_type() == kCUDA) {
-
-    std::cerr << "self" << std::endl;
-    print(std::cerr, self, 120);
-    std::cerr << self.sizes() << std::endl << std::endl;
-
-    std::cerr << "indices[0]" << std::endl;
-    print(std::cerr, indices[0], 120);
-    std::cerr << indices[0].sizes() << std::endl << std::endl;
-
-    std::cerr << "value" << std::endl;
-    print(std::cerr, value, 120);
-    std::cerr << value.sizes() << std::endl << std::endl;
-
-
-    self = _index_put_helper_cuda(self, indices, value, accumulate);//index_put_cuda(value, indices[0], self.size(0), 0L);
-
-    std::cerr << "self" << std::endl;
-    print(std::cerr, self, 120);
-    std::cerr << self.sizes() << std::endl << std::endl;
-
-    return self;
-
-//    Tensor src, linearIndex, expandedValue;
-//    std::tie(src, linearIndex) = makeLinearIndex(self, indices);
-//    std::tie(expandedValue) = expand_inplace(linearIndex, value);
-//
-//    std::cerr << "self" << std::endl;
-//    print(std::cerr, self, 120);
-//    std::cerr << self.sizes() << std::endl << std::endl;
-//
-//    std::cerr << "indices[0]" << std::endl;
-//    print(std::cerr, indices[0], 120);
-//    std::cerr << indices[0].sizes() << std::endl << std::endl;
-//
-//    std::cerr << "value" << std::endl;
-//    print(std::cerr, value, 120);
-//    std::cerr << value.sizes() << std::endl << std::endl;
-//
-//    std::cerr << "src" << std::endl;
-//    print(std::cerr, src, 120);
-//    std::cerr << src.sizes() << std::endl << std::endl;
-//
-//    std::cerr << "linearIndex" << std::endl;
-//    print(std::cerr, linearIndex, 120);
-//    std::cerr << linearIndex.sizes() << std::endl << std::endl;
-//
-//    std::cerr << "expandedValue" << std::endl;
-//    print(std::cerr, expandedValue, 120);
-//    std::cerr << expandedValue.sizes() << std::endl << std::endl;
-//
-//    Tensor& ret = src.put_(linearIndex, expandedValue, true);
-//
-//    std::cerr << "ret" << std::endl;
-//    print(std::cerr, ret, 120);
-//    std::cerr << ret.sizes() << std::endl << std::endl;
-//
-//    return src.put_(linearIndex, expandedValue, true);
-
-  }
-
-
-//  auto info = make_info(self, indices);
-//  auto iter = make_index_put_iterator(info, value);
-//  index_put_stub(iter->device_type(), *iter, info.indexed_sizes, info.indexed_strides, accumulate);
-//  return self;
-
-  self = _index_put_helper_cpu(self, indices, value, accumulate);
-  return self;
-}
-
-
-Tensor _index_put_helper_cpu(const Tensor & self, TensorList indices, const Tensor & values, bool accumulate) {
-  auto info = make_info(self, indices);
-  auto iter = make_index_put_iterator(info, values);
-  index_put_stub(iter->device_type(), *iter, info.indexed_sizes, info.indexed_strides, accumulate);
-  return self;
-
-}
-
-#endif
 
 Tensor & index_copy_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) {
   dim = maybe_wrap_dim(dim, self.dim());
