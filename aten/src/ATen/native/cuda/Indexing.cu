@@ -1,3 +1,4 @@
+#if false
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/TensorUtils.h>
@@ -77,9 +78,11 @@ static std::vector<Tensor> expandByteTensors2(const Tensor & self, TensorList in
 // returns
 //  tensor.permute([1, 3, 0, 2]), {a, b, nullptr, nullptr}
 static std::tuple<Tensor, Tensor>
-flattenToFront(const Tensor & self, TensorList indices, std::vector<int64_t>& dims) {
+flattenToFront(const Tensor & self, TensorList indices, std::vector<int64_t>& dims,
+    std::vector<int64_t>& sizes) {
   std::vector<Tensor> transposedIndices;
   dims.reserve(self.dim());
+  sizes.resize(self.dim());
   for (int64_t i = 0; i < std::min<int64_t>(indices.size(), self.dim()); i++) {
     if (indices[i].defined()) {
       dims.push_back(i);
@@ -91,12 +94,17 @@ flattenToFront(const Tensor & self, TensorList indices, std::vector<int64_t>& di
       dims.push_back(i);
     }
   }
+  int64_t n1 = 1L;
   for (int64_t i = 0L; i < self.dim(); i++) {
     if (std::find(dims.begin(), dims.end(), i) == dims.end()) {
       dims.push_back(i);
     }
+    if (i + 1 < self.dim()) {
+      n1 *= self.size(i);
+    }
+    sizes[i] = self.size(i);
   }
-  return std::make_tuple(self.view({12,-1}), //permute(dims),//torch::utils::flatten_dense_tensors(transposedIndices));
+  return std::make_tuple(self.view({n1,-1}), //permute(dims),//torch::utils::flatten_dense_tensors(transposedIndices));
       std::move(at::stack(transposedIndices, 0)));
 }
 
@@ -178,9 +186,10 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
   int padding_idx = -1;
 
   std::vector<int64_t> dims;
+  std::vector<int64_t> sizes;
   Tensor self_;
   Tensor indices;
-  std::tie(self_, indices) = flattenToFront(self, indices__, dims);
+  std::tie(self_, indices) = flattenToFront(self, indices__, dims, sizes);
 
   auto num_indices = indices[0].numel();
   auto grad = values.contiguous().view({num_indices, values.size(-1)});
@@ -225,7 +234,7 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
       padding_idx);
   });
   THCudaCheck(cudaGetLastError());
-  self.copy_(self_.view({3,4,5}));
+  self.copy_(self_.view({sizes}));
 
 //  std::cerr << "self  --->>" << std::endl;
 //  print(std::cerr, self, 120);
@@ -234,3 +243,4 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
 }
 
 }}  // namespace at::native
+#endif

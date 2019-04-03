@@ -257,6 +257,27 @@ static std::tuple<Tensor, Tensor> makeLinearIndex(Tensor self, TensorList orig) 
   if (!hasContiguousSubspace(indices)) {
     std::tie(self, indices) = transposeToFront(self, indices);
   }
+
+  for (size_t i = 0; i < orig.size(); i++) {
+    if (!orig[i].defined()) {
+      continue;
+    }
+    std::cerr << "orig[i]  CPU " << i << std::endl;
+    print(std::cerr, orig[i], 120);
+    std::cerr << orig[i].sizes() << std::endl << std::endl;
+  }
+  for (size_t i = 0; i < indices.size(); i++) {
+    if (!indices[i].defined()) {
+      continue;
+    }
+    std::cerr << "indices[i]  CPU " << i << std::endl;
+    print(std::cerr, indices[i], 120);
+    std::cerr << indices[i].sizes() << std::endl << std::endl;
+  }
+  std::cerr << "self!" << std::endl;
+  print(std::cerr, self, 120);
+  std::cerr << self.sizes() << std::endl << std::endl;
+
   auto linearIndex = computeLinearIndex(self, indices);
   return std::make_tuple(self, linearIndex);
 }
@@ -451,7 +472,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   if (indices.size() > (size_t)self.dim()) {
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
   }
-  if (accumulate) {
+  if (accumulate && self.type().device_type() == kCUDA) {
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
