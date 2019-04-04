@@ -1139,6 +1139,9 @@
 - func: index_put_(Tensor(a!) self, Tensor?[] indices, Tensor values, bool accumulate=False) -> Tensor(a!)
   matches_jit_signature: True
   variants: function, method
+#  dispatch:
+#    CPU: index_put_
+#    CUDA: index_put_cuda_
 
 - func: index_put(Tensor self, Tensor?[] indices, Tensor values, bool accumulate=False) -> Tensor
   matches_jit_signature: True

@@ -271,10 +271,20 @@ void THCTensor_(put)(THCState *state, THCTensor *dst, THCudaLongTensor *index, T
     THCudaLongTensor_resizeAs(state, sorted_index, index);
     THC_pointwiseApply2<int64_t, int64_t>(state, sorted_index, index, WrapIndexOp(dstSize));
 
+  std::cerr << "index" << std::endl;
+  std::cerr << THCTensor_(sizeDesc)(state, index).str << std::endl;
+
     THCTensor* sorted_src = THCTensor_(newClone)(state, src);
 
     THCTensor_(sort_indices)(state, sorted_index, sorted_src);
     dispatchTakePut<scalar_t, TensorPutAccumulateOp>(state, dst, sorted_src, sorted_index);
+
+  std::cerr << "sorted_index" << std::endl;
+  std::cerr << THCTensor_(sizeDesc)(state, sorted_index).str << std::endl;
+
+  std::cerr << "sorted_src" << std::endl;
+  std::cerr << THCTensor_(sizeDesc)(state, sorted_src).str << std::endl;
+
 
     THCTensor_(free)(state, sorted_src);
     THCudaLongTensor_free(state, sorted_index);

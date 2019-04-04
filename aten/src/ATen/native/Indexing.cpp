@@ -192,6 +192,10 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
   auto strides = computeLinearStride(src);
   Type& longType = src.type().toScalarType(kLong);
 
+  std::cerr << "src" << std::endl;
+  print(std::cerr, src, 120);
+  std::cerr << src.sizes() << std::endl << std::endl;
+
   // Compute the linear index by multiplying the indexing tensors by the
   // stride and summing them. All the indexing tensors have the same shape at
   // this point. We also compute the number of dimensions before and after that
@@ -203,6 +207,14 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
       // Cast index to the longType matching src's backend
       // This allows us to support ie indexing a cuda tensor with a cpu tensor
       Tensor index = (wrapIndexOnce(indices[i], i, src.size(i)) * strides[i]).toType(longType);
+
+      std::cerr << i << " " << indices[i] << std::endl << std::endl;
+      std::cerr << i << " " << strides[i] << std::endl << std::endl;
+
+      std::cerr << "index" << std::endl;
+      print(std::cerr, index, 120);
+      std::cerr << index.sizes() << std::endl << std::endl;
+
       if (linearIndex.defined()) {
         linearIndex += index;
       } else {
@@ -480,7 +492,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   }
   auto info = make_info(self, indices);
   auto iter = make_index_put_iterator(info, value);
-  index_put_stub(value.device().type(), *iter, info.indexed_sizes, info.indexed_strides, value, accumulate);
+  index_put_stub(iter->device_type(), *iter, info.indexed_sizes, info.indexed_strides, accumulate);
   return self;
 }
 
