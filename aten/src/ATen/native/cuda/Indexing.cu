@@ -73,6 +73,13 @@
 
 namespace at { namespace native {
 
+//Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value, bool accumulate) {
+//  return self;
+//}
+
+
+
+
 #ifdef __HIP_PLATFORM_HCC__
 static const int WARP_SIZE = 64;
 #else
@@ -486,45 +493,27 @@ static std::unique_ptr<TensorIterator> make_index_put_iterator(const AdvancedInd
   return builder.build();
 }
 
-Tensor index(const Tensor & self, TensorList indices) {
-  if (indices.size() > (size_t)self.dim()) {
-    AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
-  }
-
-  auto info = make_info(self, indices);
-  auto iter = make_index_iterator(info);
-  index_stub(iter->device_type(), *iter, info.indexed_sizes, info.indexed_strides);
-  return iter->output();
-}
-
-Tensor index_put(const Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
-  return self.clone().index_put_(indices, value, accumulate);
-}
-
-Tensor & index_put_cuda_(Tensor & self, Tensor & index, const Tensor & values, bool accumulate);
-
-Tensor & index_put_cuda_(Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
-  if (indices.size() > (size_t)self.dim()) {
-    AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
-  }
-  if (accumulate) { //} && self.type().device_type() == kCUDA) {
-    //    Tensor src, linearIndex, expandedValue;
-    //    std::tie(src, linearIndex) = makeLinearIndex(self, indices);
-    //    std::tie(expandedValue) = expand_inplace(linearIndex, value);
-    //    return src.put_(linearIndex, expandedValue, true);
-
-
-    Tensor src, linearIndex;
-    std::tie(src, linearIndex) = makeLinearIndex(self, indices);
-
-    return index_put_cuda_(self, linearIndex, value, accumulate);
-
-  }
+//Tensor index(const Tensor & self, TensorList indices) {
+//  if (indices.size() > (size_t)self.dim()) {
+//    AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
+//  }
+//
 //  auto info = make_info(self, indices);
-//  auto iter = make_index_put_iterator(info, value);
-//  index_put_stub(value.device().type(), *iter, info.indexed_sizes, info.indexed_strides, value, accumulate);
-  return self;
-}
+//  auto iter = make_index_iterator(info);
+//  index_stub(iter->device_type(), *iter, info.indexed_sizes, info.indexed_strides);
+//  return iter->output();
+//}
+//
+//Tensor index_put(const Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
+//  return self.clone().index_put_(indices, value, accumulate);
+//}
+
+
+
+
+
+
+
 
 
 
@@ -589,7 +578,10 @@ __global__ void embedding_backward_kernel2(
   }
 }
 
-Tensor & index_put_cuda_(Tensor & self, Tensor & index, const Tensor & values, bool accumulate) {
+
+
+
+Tensor & index_put_cuda__(Tensor & self, Tensor & index, const Tensor & values, bool accumulate) {
   if (values.numel() == 0 || values.numel() == 1) {
     return self;
   }
@@ -660,6 +652,40 @@ Tensor & index_put_cuda_(Tensor & self, Tensor & index, const Tensor & values, b
   //  std::cerr << self.sizes() << std::endl << std::endl;
   return self;
 }
+
+
+
+//Tensor & index_put_cuda__(Tensor & self, Tensor & index, const Tensor & values, bool accumulate);
+
+Tensor & index_put_cuda_(Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
+  if (indices.size() > (size_t)self.dim()) {
+    AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
+  }
+  if (accumulate) { //} && self.type().device_type() == kCUDA) {
+    //    Tensor src, linearIndex, expandedValue;
+    //    std::tie(src, linearIndex) = makeLinearIndex(self, indices);
+    //    std::tie(expandedValue) = expand_inplace(linearIndex, value);
+    //    return src.put_(linearIndex, expandedValue, true);
+
+
+    Tensor src, linearIndex;
+    std::tie(src, linearIndex) = makeLinearIndex(self, indices);
+
+    return index_put_cuda__(self, linearIndex, value, accumulate);
+
+  }
+  //  auto info = make_info(self, indices);
+  //  auto iter = make_index_put_iterator(info, value);
+  //  index_put_stub(value.device().type(), *iter, info.indexed_sizes, info.indexed_strides, value, accumulate);
+  return self;
+}
+
+
+
+
+}}
+
+#if false
 
 
 
@@ -738,7 +764,7 @@ Tensor & index_put_cuda_(Tensor & self, Tensor & index, const Tensor & values, b
 
 
 }} // at::native
-
+#endif
 
 
 
