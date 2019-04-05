@@ -242,6 +242,10 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
     afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
   }
 
+  std::cerr << "linearIndex  --->>" << std::endl;
+  print(std::cerr, linearIndex, 120);
+  std::cerr << linearIndex.sizes() << std::endl << std::endl;
+
   // Sum with broadcasting to compute the full index
   linearIndex = unsqueezeN(linearIndex, emptyBefore, emptyAfter);
   if (beforeIndex.defined()) {
@@ -250,6 +254,11 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
   if (afterIndex.defined()) {
     linearIndex = linearIndex + afterIndex;
   }
+
+  std::cerr << "linearIndex  <<---" << std::endl;
+  print(std::cerr, linearIndex, 120);
+  std::cerr << linearIndex.sizes() << std::endl << std::endl;
+
   return linearIndex;
 }
 

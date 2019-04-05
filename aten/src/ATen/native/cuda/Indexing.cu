@@ -213,7 +213,6 @@ static Tensor wrapIndexOnce(const Tensor & index, int64_t dim, int64_t dim_size)
 
 static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
   auto strides = computeLinearStride(src);
-  Type& longType = src.type().toScalarType(kLong);
 
   std::cerr << "src" << std::endl;
   print(std::cerr, src, 120);
@@ -229,7 +228,7 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
     if (indices[i].defined()) {
       // Cast index to the longType matching src's backend
       // This allows us to support ie indexing a cuda tensor with a cpu tensor
-      Tensor index = (wrapIndexOnce(indices[i], i, src.size(i)) * strides[i]).toType(longType);
+      Tensor index = (wrapIndexOnce(indices[i], i, src.size(i)) * strides[i]).to(kLong);
 
       std::cerr << i << " " << indices[i] << std::endl << std::endl;
       std::cerr << i << " " << strides[i] << std::endl << std::endl;
@@ -469,7 +468,7 @@ static AdvancedIndex make_info(Tensor self, TensorList orig) {
 static std::unique_ptr<TensorIterator> make_index_iterator(const AdvancedIndex& info) {
   auto builder = TensorIterator::Builder();
   builder.dont_compute_common_dtype();
-  builder.add_output(Tensor(), &info.src.type());
+  builder.add_output(Tensor(), info.src.type().backend(), info.src.scalar_type());
   builder.add_input(info.src);
   for (auto& index : info.indices) {
     builder.add_input(index);
@@ -480,13 +479,13 @@ static std::unique_ptr<TensorIterator> make_index_iterator(const AdvancedIndex& 
 static std::unique_ptr<TensorIterator> make_index_put_iterator(const AdvancedIndex& info, const Tensor& value) {
   if (!is_expandable_to(value.sizes(), info.src.sizes())) {
     AT_ERROR("shape mismatch: value tensor of shape ", value.sizes(),
-        " cannot be broadcast to indexing result of shape ", info.src.sizes());
+             " cannot be broadcast to indexing result of shape ", info.src.sizes());
   }
   auto builder = TensorIterator::Builder();
   builder.dont_compute_common_dtype();
   builder.dont_resize_outputs();
   builder.add_output(info.src);
-  builder.add_input(value, &info.src.type());
+  builder.add_input(value, info.src.type().backend(), info.src.scalar_type());
   for (auto& index : info.indices) {
     builder.add_input(index);
   }
@@ -601,6 +600,13 @@ Tensor & index_put_cuda__(Tensor & self, Tensor & index, const Tensor & values, 
   Tensor self_;
   //  Tensor indices;
   //  std::tie(self_, indices) = flattenToFront(self, indices__, dims, sizes);
+
+  std::cerr << "index  --->>" << std::endl;
+  print(std::cerr, index, 120);
+  std::cerr << index.sizes() << std::endl << std::endl;
+  std::cerr << "values  --->>" << std::endl;
+  print(std::cerr, values, 120);
+  std::cerr << values.sizes() << std::endl << std::endl;
 
   auto num_index = index.numel();
   auto grad = values.contiguous().view({num_index, values.size(-1)});
