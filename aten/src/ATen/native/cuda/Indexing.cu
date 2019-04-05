@@ -602,6 +602,14 @@ Tensor & index_put_cuda__(Tensor & self, Tensor & index, const Tensor & values, 
   //  Tensor indices;
   //  std::tie(self_, indices) = flattenToFront(self, indices__, dims, sizes);
 
+      std::cerr << "index" << std::endl;
+      print(std::cerr, index, 120);
+      std::cerr << index.sizes() << std::endl << std::endl;
+
+      std::cerr << "values" << std::endl;
+      print(std::cerr, values, 120);
+      std::cerr << values.sizes() << std::endl << std::endl;
+
   auto num_index = index.numel();
   auto grad = values.contiguous().view({num_index, values.size(-1)});
   int64_t stride = self_.stride(0);

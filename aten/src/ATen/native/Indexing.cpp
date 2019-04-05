@@ -251,6 +251,12 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
   if (afterIndex.defined()) {
     linearIndex = linearIndex + afterIndex;
   }
+
+  std::cerr << "linearIndex" << std::endl;
+  print(std::cerr, linearIndex, 120);
+  std::cerr << linearIndex.sizes() << std::endl << std::endl;
+
+
   return linearIndex;
 }
 
@@ -484,7 +490,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   if (indices.size() > (size_t)self.dim()) {
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
   }
-  if (accumulate && self.type().device_type() == kCUDA) {
+  if (accumulate) { //} && self.type().device_type() == kCUDA) {
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
