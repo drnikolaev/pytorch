@@ -234,12 +234,24 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
     auto index = at::arange(0, nElemBefore, src.options().dtype(kLong)) * strides[emptyBefore - 1];
     index = index.view(src.sizes().slice(0, emptyBefore));
     beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
+
+    std::cerr << "beforeIndex  --->>" << std::endl;
+    print(std::cerr, beforeIndex, 120);
+    std::cerr << beforeIndex.sizes() << " emptyBefore: " << emptyBefore
+      << " nElemBefore: " << nElemBefore<< std::endl << std::endl;
+
   }
   Tensor afterIndex;
   if (emptyAfter > 0) {
     auto index = at::arange(0, nElemAfter, src.options().dtype(kLong));
     index = index.view(src.sizes().slice(src.dim() - emptyAfter, emptyAfter));
     afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
+
+    std::cerr << "afterIndex  --->>" << std::endl;
+    print(std::cerr, afterIndex, 120);
+    std::cerr << afterIndex.sizes() << " emptyAfter: " << emptyAfter
+      << " nElemAfter: " << nElemAfter<< std::endl << std::endl;
+
   }
 
   std::cerr << "linearIndex  --->>" << std::endl;
@@ -493,7 +505,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   if (indices.size() > (size_t)self.dim()) {
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
   }
-  if (accumulate && self.type().device_type() == kCUDA) {
+  if (accumulate) { // && self.type().device_type() == kCUDA) {
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
