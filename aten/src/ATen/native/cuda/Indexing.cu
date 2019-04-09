@@ -563,10 +563,172 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices_, const Tensor & valu
 }
 #endif
 
-Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate) {
-  return self.put_(index, source, accumulate);
+
+
+/*
+static void THCTensor_(sort_indices)(THCState *state, THCudaLongTensor *index, THCTensor *src) {
+  THCThrustAllocator thrustAlloc(state);
+
+  auto index_iter = thrust::device_ptr<int64_t>(THCudaLongTensor_data(state, index));
+  auto src_iter = thrust::device_ptr<scalar_t>(THCTensor_(data)(state, src));
+  auto numel = THCTensor_(numel)(state, src);
+
+  thrust::sort_by_key(
+      thrust::cuda::par(thrustAlloc).on(THCState_getCurrentStream(state)),
+      index_iter, index_iter + numel,
+      src_iter, ThrustLTOp<int64_t>());
 }
 
+
+// wrap indices so to replace negative indices
+THCudaLongTensor* sorted_index = THCudaLongTensor_new(state);
+THCudaLongTensor_resizeAs(state, sorted_index, index);
+THC_pointwiseApply2<int64_t, int64_t>(state, sorted_index, index, WrapIndexOp(dstSize));
+
+THCTensor* sorted_src = THCTensor_(newClone)(state, src);
+THCTensor_(sort_indices)(state, sorted_index, sorted_src);
+
+dispatchTakePut<scalar_t, TensorPutAccumulateOp>(state, dst, sorted_src, sorted_index);
+
+*/
+
+// TODO this is brutal cut&paste from THCTensorInfo.cuh!
+struct WrapIndexOp {
+  WrapIndexOp(int64_t size) : size(size) {}
+
+  __device__ __forceinline__ int64_t operator()(int64_t idx) {
+    assert(idx < size && idx >= -size);
+    return idx < 0 ? idx + size : idx;
+  }
+
+  int64_t size;
+};
+
+// Translate a linear index for the apply to a T* offset;
+// specialized on `Dims` to reduce nvcc compilation time
+template <typename T, typename IndexType, int Dims>
+struct IndexToOffset {
+  static __host__ __device__ IndexType get(
+      IndexType linearId,
+      const TensorInfo<T, IndexType>& info) {
+
+    IndexType offset = 0;
+
+    // Uses static dims
+    for (int i = Dims - 1; i > 0; --i) {
+      IndexType curDimIndex = linearId % info.sizes[i];
+      IndexType curDimOffset = curDimIndex * info.strides[i];
+      offset += curDimOffset;
+      linearId /= info.sizes[i];
+    }
+
+    return offset + linearId * info.strides[0];
+  }
+};
+
+template <int Dims, typename T, typename IndexType>
+__device__ __forceinline__ IndexType indexToOffset(
+    const TensorInfo<T, IndexType>& info,
+    int64_t index,
+    IndexType size)
+{
+  IndexType linearIndex = static_cast<IndexType>(index);
+  assert(linearIndex < size && linearIndex >= -size);
+  if (linearIndex < 0) {
+    linearIndex += size;
+  }
+  return IndexToOffset<T, IndexType, Dims>::get(linearIndex, info);
+}
+
+template <typename T, typename IndexType, int Dims>
+struct TensorPutOp {
+  TensorPutOp(TensorInfo<T, IndexType> info, IndexType numel, int64_t*, int64_t*)
+      : info(info), numel(numel) {}
+
+  __device__ __forceinline__ void operator()(T* value, int64_t* index) {
+    auto offset = indexToOffset<Dims>(info, *index, numel);
+    info.data[offset] = *value;
+  }
+
+  const TensorInfo<T, IndexType> info;
+  IndexType numel;
+};
+
+//template <typename T, typename IndexType, int Dims>
+//struct TensorPutAccumulateOp {
+//  TensorPutAccumulateOp(TensorInfo<T, IndexType> info, IndexType numel, int64_t* start, int64_t* end)
+//      : info(info), numel(numel), start(start), end(end) {}
+//
+//  __device__ __forceinline__ void operator()(T* value, int64_t* index) {
+//    if (index == start || *index != *(index - 1)) {
+//      int64_t linear_index = *index;
+//      auto offset = indexToOffset<Dims>(info, linear_index, numel);
+//      do {
+//        info.data[offset] = THCNumerics<T>::add(info.data[offset], *value);
+//        index++;
+//        value++;
+//      } while (index != end && *index == linear_index);
+//    }
+//  }
+
+template <typename T>
+struct TensorPutAccumulateOp {
+  TensorPutAccumulateOp(TensorInfo<T, int64_t> info, int64_t numel, int64_t* start, int64_t* end)
+      : info(info), numel(numel), start(start), end(end) {}
+
+    __device__ __forceinline__ void operator()(T* value, int64_t* index) {
+      if (index == start || *index != *(index - 1)) {
+        int64_t linear_index = *index;
+        auto offset = indexToOffset<25>(info, linear_index, numel);
+        do {
+          info.data[offset] = THCNumerics<T>::add(info.data[offset], *value);
+          index++;
+          value++;
+        } while (index != end && *index == linear_index);
+      }
+  }
+
+  const TensorInfo<T, int64_t> info;
+  int64_t numel;
+  int64_t* start;
+  int64_t* end;
+};
+
+
+Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate) {
+  auto sorted_index = at::empty_like(index);
+  auto orig_index = at::empty_like(index);
+  int64_t dstSize = self.numel();
+  sorted_index.copy_(index);
+  auto index_iter = thrust::device_ptr<int64_t>(orig_index.data<int64_t>());
+  auto sorted_iter = thrust::device_ptr<int64_t>(sorted_index.data<int64_t>());
+  auto src_iter = thrust::device_ptr<float>(source.data<float>()); // TODO scalar_t
+  auto dst_iter = thrust::device_ptr<float>(self.data<float>());
+  auto numel = source.numel();
+
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  auto allocator = THCThrustAllocator(globalContext().lazyInitCUDA());
+  auto policy = thrust::cuda::par(allocator).on(stream);
+
+  if (accumulate) {
+    WrapIndexOp wiop(dstSize);
+    thrust::transform(policy,
+        index_iter, index_iter + numel, sorted_iter, wiop);
+
+    thrust::sort_by_key(policy,
+        index_iter, index_iter + numel, src_iter, ThrustLTOp<int64_t>());
+
+    TensorPutAccumulateOp<float> paop;
+
+    thrust::transform(policy,
+        index_iter, index_iter + numel, sorted_iter, dst_iter, paop);
+  } else {
+//    TensorPutOp<float, int64_t, 25> pop();
+//    thrust::transform(policy,
+//        index_iter, index_iter + numel, sorted_iter, dst_iter, pop);
+  }
+  return self;
+}
 
 
 Tensor & index_put_cuda_(Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
