@@ -517,6 +517,10 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   return self;
 }
 
+Tensor & xput_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate) {
+  return self.put_(index, source, accumulate);
+}
+
 Tensor & index_copy_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) {
   dim = maybe_wrap_dim(dim, self.dim());
 
