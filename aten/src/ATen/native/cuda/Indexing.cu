@@ -54,7 +54,9 @@
 #include <ATen/ExpandUtils.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/native/TensorIterator.h>
+#include <c10/macros/Macros.h>
 #include <c10/util/Exception.h>
+#include <c10/core/ScalarType.h>
 
 #include <ATen/native/Indexing.h>
 #include <ATen/NativeFunctions.h>
@@ -676,15 +678,15 @@ struct TensorPutAccumulateOp {
   TensorPutAccumulateOp(TensorInfo<T, int64_t> info, int64_t numel, int64_t* start, int64_t* end)
       : info(info), numel(numel), start(start), end(end) {}
 
-    __device__ __forceinline__ void operator()(T* value, int64_t* index) {
-      if (index == start || *index != *(index - 1)) {
-        int64_t linear_index = *index;
+    __device__ __forceinline__ void operator()(int64_t& index, T& value) {
+      if (&index == start || index != *(&index - 1)) {
+        int64_t linear_index = index;
         auto offset = indexToOffset<25>(info, linear_index, numel);
         do {
-          info.data[offset] = THCNumerics<T>::add(info.data[offset], *value);
+          info.data[offset] += value; //THCNumerics<T>::add(info.data[offset], *value);
           index++;
           value++;
-        } while (index != end && *index == linear_index);
+        } while (&index != end && index == linear_index);
       }
   }
 
@@ -694,6 +696,18 @@ struct TensorPutAccumulateOp {
   int64_t* end;
 };
 
+#define AT_DISPATCH_FLOATING_TYPES2(TYPE, NAME, ...)                          \
+  [&] {                                                                      \
+    const auto& the_type = TYPE;                                             \
+    (void)the_type;                                                          \
+    at::ScalarType _st = ::detail::scalar_type(TYPE);                        \
+    switch (_st) {                                                           \
+      AT_PRIVATE_CASE_TYPE(at::ScalarType::Double, double, __VA_ARGS__)      \
+      AT_PRIVATE_CASE_TYPE(at::ScalarType::Float, float, __VA_ARGS__)        \
+      default:                                                               \
+        AT_ERROR(#NAME, " not implemented for '", toString(_st), "'");       \
+    }                                                                        \
+  }()
 
 Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate) {
   auto sorted_index = at::empty_like(index);
@@ -702,31 +716,57 @@ Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, 
   sorted_index.copy_(index);
   auto index_iter = thrust::device_ptr<int64_t>(orig_index.data<int64_t>());
   auto sorted_iter = thrust::device_ptr<int64_t>(sorted_index.data<int64_t>());
-  auto src_iter = thrust::device_ptr<float>(source.data<float>()); // TODO scalar_t
-  auto dst_iter = thrust::device_ptr<float>(self.data<float>());
   auto numel = source.numel();
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   auto allocator = THCThrustAllocator(globalContext().lazyInitCUDA());
   auto policy = thrust::cuda::par(allocator).on(stream);
 
-  if (accumulate) {
-    WrapIndexOp wiop(dstSize);
-    thrust::transform(policy,
-        index_iter, index_iter + numel, sorted_iter, wiop);
+  AT_DISPATCH_FLOATING_TYPES2(self.scalar_type(), "xput_cuda_", [&] {
+    auto src_iter = thrust::device_ptr<scalar_t>(source.data<scalar_t>());
+    auto dst_iter = thrust::device_ptr<scalar_t>(self.data<scalar_t>());
 
-    thrust::sort_by_key(policy,
-        index_iter, index_iter + numel, src_iter, ThrustLTOp<int64_t>());
+    if (accumulate) {
+      WrapIndexOp wrapIndexOp(dstSize);
+      thrust::transform(
+          policy,
+          index_iter, index_iter + numel, sorted_iter, wrapIndexOp);
 
-    TensorPutAccumulateOp<float> paop;
+      thrust::sort_by_key(
+          policy,
+          index_iter, index_iter + numel, src_iter, ThrustLTOp<int64_t>());
 
-    thrust::transform(policy,
-        index_iter, index_iter + numel, sorted_iter, dst_iter, paop);
-  } else {
-//    TensorPutOp<float, int64_t, 25> pop();
+      auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
+      TensorPutAccumulateOp<scalar_t> putAccumulateOp(self_info,
+          numel, index_iter, index_iter + numel);
+
+      thrust::transform(
+          policy,
+          index_iter, index_iter + numel, src_iter, dst_iter, putAccumulateOp);
+    } else {
+//    TensorPutOp<float, int64_t, 25> putOp();
 //    thrust::transform(policy,
 //        index_iter, index_iter + numel, sorted_iter, dst_iter, pop);
-  }
+    }
+
+
+//    using accscalar_t = acc_type<scalar_t, true>;
+//    accscalar_t pa = (accscalar_t)(p);
+//    auto self_info = cuda::detail::getTensorInfo<scalar_t, unsigned int>(self);
+//    auto ret_info = cuda::detail::getTensorInfo<scalar_t, unsigned int>(ret);
+//    auto mask_info = cuda::detail::getTensorInfo<uint8_t, unsigned int>(mask);
+//    self_info.collapseDims();
+//    ret_info.collapseDims();
+//    mask_info.collapseDims(); //ret and mask are collapsed to 1d contiguous tensor
+//    switch (self_info.dims) {
+//      case 1:
+//        fused_dropout_kernel<scalar_t, accscalar_t, unsigned int, 1><<<grid, dim_block, 0, at::cuda::getCurrentCUDAStream()>>>(self_info, ret_info, mask_info, nelem, pa, next_philox_seed(gen,counter_offset));
+//        break;
+//      default:
+//        fused_dropout_kernel<scalar_t, accscalar_t, unsigned int, -1><<<grid, dim_block, 0, at::cuda::getCurrentCUDAStream()>>>(self_info, ret_info, mask_info, nelem, pa, next_philox_seed(gen,counter_offset));
+//    }
+  });
+
   return self;
 }
 
