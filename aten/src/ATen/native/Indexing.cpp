@@ -191,9 +191,9 @@ static Tensor wrapIndexOnce(const Tensor & index, int64_t dim, int64_t dim_size)
 static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
   auto strides = computeLinearStride(src);
 
-  std::cerr << "src" << std::endl;
-  print(std::cerr, src, 120);
-  std::cerr << src.sizes() << std::endl << std::endl;
+//  std::cerr << "src" << std::endl;
+//  print(std::cerr, src, 120);
+//  std::cerr << src.sizes() << std::endl << std::endl;
 
   // Compute the linear index by multiplying the indexing tensors by the
   // stride and summing them. All the indexing tensors have the same shape at
@@ -207,12 +207,12 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
       // This allows us to support ie indexing a cuda tensor with a cpu tensor
       Tensor index = (wrapIndexOnce(indices[i], i, src.size(i)) * strides[i]).to(kLong);
 
-      std::cerr << i << " " << indices[i] << std::endl << std::endl;
-      std::cerr << i << " " << strides[i] << std::endl << std::endl;
-
-      std::cerr << "index" << std::endl;
-      print(std::cerr, index, 120);
-      std::cerr << index.sizes() << std::endl << std::endl;
+//      std::cerr << i << " " << indices[i] << std::endl << std::endl;
+//      std::cerr << i << " " << strides[i] << std::endl << std::endl;
+//
+//      std::cerr << "index" << std::endl;
+//      print(std::cerr, index, 120);
+//      std::cerr << index.sizes() << std::endl << std::endl;
 
       if (linearIndex.defined()) {
         linearIndex += index;
@@ -235,10 +235,10 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
     index = index.view(src.sizes().slice(0, emptyBefore));
     beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
 
-    std::cerr << "beforeIndex  --->>" << std::endl;
-    print(std::cerr, beforeIndex, 120);
-    std::cerr << beforeIndex.sizes() << " emptyBefore: " << emptyBefore
-      << " nElemBefore: " << nElemBefore<< std::endl << std::endl;
+//    std::cerr << "beforeIndex  --->>" << std::endl;
+//    print(std::cerr, beforeIndex, 120);
+//    std::cerr << beforeIndex.sizes() << " emptyBefore: " << emptyBefore
+//      << " nElemBefore: " << nElemBefore<< std::endl << std::endl;
 
   }
   Tensor afterIndex;
@@ -247,16 +247,16 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
     index = index.view(src.sizes().slice(src.dim() - emptyAfter, emptyAfter));
     afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
 
-    std::cerr << "afterIndex  --->>" << std::endl;
-    print(std::cerr, afterIndex, 120);
-    std::cerr << afterIndex.sizes() << " emptyAfter: " << emptyAfter
-      << " nElemAfter: " << nElemAfter<< std::endl << std::endl;
+//    std::cerr << "afterIndex  --->>" << std::endl;
+//    print(std::cerr, afterIndex, 120);
+//    std::cerr << afterIndex.sizes() << " emptyAfter: " << emptyAfter
+//      << " nElemAfter: " << nElemAfter<< std::endl << std::endl;
 
   }
 
-  std::cerr << "linearIndex  --->>" << std::endl;
-  print(std::cerr, linearIndex, 120);
-  std::cerr << linearIndex.sizes() << std::endl << std::endl;
+//  std::cerr << "linearIndex  --->>" << std::endl;
+//  print(std::cerr, linearIndex, 120);
+//  std::cerr << linearIndex.sizes() << std::endl << std::endl;
 
   // Sum with broadcasting to compute the full index
   linearIndex = unsqueezeN(linearIndex, emptyBefore, emptyAfter);
@@ -267,9 +267,9 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
     linearIndex = linearIndex + afterIndex;
   }
 
-  std::cerr << "linearIndex  <<---" << std::endl;
-  print(std::cerr, linearIndex, 120);
-  std::cerr << linearIndex.sizes() << std::endl << std::endl;
+//  std::cerr << "linearIndex  <<---" << std::endl;
+//  print(std::cerr, linearIndex, 120);
+//  std::cerr << linearIndex.sizes() << std::endl << std::endl;
 
 
   return linearIndex;
@@ -295,21 +295,21 @@ static std::tuple<Tensor, Tensor> makeLinearIndex(Tensor self, TensorList orig) 
     if (!orig[i].defined()) {
       continue;
     }
-    std::cerr << "orig[i]  CPU " << i << std::endl;
-    print(std::cerr, orig[i], 120);
-    std::cerr << orig[i].sizes() << std::endl << std::endl;
+//    std::cerr << "orig[i]  CPU " << i << std::endl;
+//    print(std::cerr, orig[i], 120);
+//    std::cerr << orig[i].sizes() << std::endl << std::endl;
   }
   for (size_t i = 0; i < indices.size(); i++) {
     if (!indices[i].defined()) {
       continue;
     }
-    std::cerr << "indices[i]  CPU " << i << std::endl;
-    print(std::cerr, indices[i], 120);
-    std::cerr << indices[i].sizes() << std::endl << std::endl;
+//    std::cerr << "indices[i]  CPU " << i << std::endl;
+//    print(std::cerr, indices[i], 120);
+//    std::cerr << indices[i].sizes() << std::endl << std::endl;
   }
-  std::cerr << "self!" << std::endl;
-  print(std::cerr, self, 120);
-  std::cerr << self.sizes() << std::endl << std::endl;
+//  std::cerr << "self!  CPU " << std::endl;
+//  print(std::cerr, self, 120);
+//  std::cerr << self.sizes() << std::endl << std::endl;
 
   auto linearIndex = computeLinearIndex(self, indices);
   return std::make_tuple(self, linearIndex);
@@ -508,7 +508,19 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   if (accumulate) { // && self.type().device_type() == kCUDA) {
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
+
+//    std::cout << "value CPU" << std::endl;
+//    print(std::cout, value, 120);
+//    std::cout << value.sizes() << std::endl << std::endl;
+
+
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
+
+//    std::cout << "expandedValue CPU" << std::endl;
+//    print(std::cout, expandedValue, 120);
+//    std::cout << expandedValue.sizes() << std::endl << std::endl;
+
+
     return src.put_(linearIndex, expandedValue, true);
   }
   auto info = make_info(self, indices);
