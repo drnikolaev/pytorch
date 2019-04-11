@@ -529,7 +529,7 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   return self;
 }
 
-Tensor & xput_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate) {
+Tensor & xput_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate, int64_t, int64_t) {
   return self.put_(index, source, accumulate);
 }
 

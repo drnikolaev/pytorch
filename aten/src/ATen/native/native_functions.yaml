@@ -1151,7 +1151,7 @@
   matches_jit_signature: True
   variants: function, method
 
-- func: xput_(Tensor(a!) self, Tensor? index, Tensor? source, bool accumulate) -> Tensor(a!)
+- func: xput_(Tensor(a!) self, Tensor? index, Tensor? source, bool accumulate, int emptyBefore, int emptyAfter) -> Tensor(a!)
   matches_jit_signature: True
   variants: function, method
   dispatch:
