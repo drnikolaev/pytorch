@@ -72,6 +72,7 @@
 #include <thrust/functional.h>
 #include <thrust/execution_policy.h>
 #include <thrust/unique.h>
+#include <thrust/iterator/discard_iterator.h>
 #include <torch/csrc/utils/tensor_flatten.h>
 
 #include <ATen/cpu/vec256/vec256.h>
@@ -682,19 +683,37 @@ struct TensorPutAccumulateOp : thrust::binary_function<int64_t, T, T> {
       int64_t* start, int64_t* end)
     : info(info), numel(numel), start(start), end(end) {}
 
+//    __device__ __forceinline__ bool operator()(thrust::tuple<signed long, int64_t> ci) {
+//      entry = ci.get<0>();
+//      int64_t index = ci.get<1>();
+////      printf("CIT %ld %lld\n", entry, index);
+//      return true;
+//    }
+
     __device__ __forceinline__ T operator()(int64_t& index, T& value) {
       int64_t* pindex = &index;
       T* pvalue = &value;
+
+      //printf("???? %lld %g\n", *pindex, *pvalue);
+
       if (pindex == start || *pindex != *(pindex - 1)) {
         int64_t linear_index = *pindex;
-        auto offset = indexToOffset<T, int64_t>(info, linear_index, numel);
+        int64_t offset = indexToOffset<T, int64_t>(info, linear_index, numel);
+
+//        printf("~~~~~ %ld %lld %lld %g %g\n", entry, offset, linear_index, value, outptr[offset]);
+
+        //int i = 0;
         do {
           info.data[offset] += *pvalue; //THCNumerics<T>::add(info.data[offset], *value);
+//          outptr[offset] += *pvalue; //THCNumerics<T>::add(info.data[offset], *value);
           pindex++;
           pvalue++;
+          //++i;
         } while (pindex != end && *pindex == linear_index);
-        return info.data[offset];
       }
+//      else {
+//        printf("!!! %lld %g\n", index, value);
+//      }
     return 0;
   }
 
@@ -702,23 +721,21 @@ struct TensorPutAccumulateOp : thrust::binary_function<int64_t, T, T> {
   int64_t numel;
   int64_t* start;
   int64_t* end;
+//  signed long entry;
+//  T* outptr;
 };
 
 
 Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate) {
-  auto sorted_index = index.contiguous();//at::empty_like(index);
-  auto orig_index = index.contiguous();//at::empty_like(index);
+  auto sorted_index = at::empty_like(index);
+  auto orig_index = at::empty_like(index);
   int64_t dstSize = self.numel();
   int64_t idxSize = index.numel();
-//  orig_index.copy_(index);
+  orig_index.copy_(index);
 
-
-//  int64_t* raw_index_iter = orig_index.data<int64_t>();
   auto index_iter = thrust::device_ptr<int64_t>(orig_index.data<int64_t>());
   auto sorted_iter = thrust::device_ptr<int64_t>(sorted_index.data<int64_t>());
   auto numel = source.numel();
-
-  //self.copy_(at::ones_like(self));
 
   if (numel != idxSize) {
     AT_INDEX_ERROR("src should have the same number of elements as index: ",
@@ -733,7 +750,7 @@ Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, 
 
     AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "xput_cuda_", [&] {
       auto src_iter = thrust::device_ptr<scalar_t>(source.data<scalar_t>());
-      auto dst_iter = thrust::device_ptr<scalar_t>(self.data<scalar_t>());
+      auto dst_iter = thrust::make_discard_iterator(); // thrust::device_ptr<scalar_t>(self.data<scalar_t>());
 
       if (accumulate) {
         WrapIndexOp wrapIndexOp(dstSize);
@@ -763,8 +780,8 @@ Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, 
 
 
 
-/*
 
+#if false
   std::cout << "-> sorted_index GPU" << std::endl;
   print(std::cout, sorted_index, 120);
   std::cout << sorted_index.sizes() << std::endl << std::endl;
@@ -782,15 +799,6 @@ Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, 
       thrust::transform(policy, index_iter, index_iter_end, sorted_iter, wrapIndexOp);
   });
 
-  std::cout << "index GPU" << std::endl;
-  print(std::cout, index, 120);
-  std::cout << index.sizes() << std::endl << std::endl;
-
-  std::cout << "sorted_index GPU" << std::endl;
-  print(std::cout, sorted_index, 120);
-  std::cout << sorted_index.sizes() << std::endl << std::endl;
-
-
   AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "xput_cuda_", [&] {
     auto src_iter = thrust::device_ptr<scalar_t>(source.data<scalar_t>());
     auto dst_iter = thrust::device_ptr<scalar_t>(self.data<scalar_t>());
@@ -800,20 +808,55 @@ Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, 
         sorted_iter, sorted_iter + idxSize, src_iter, ThrustLTOp<int64_t>());
   });
 
+//  std::cout << "source GPU" << std::endl;
+//  print(std::cout, source, 120);
+//  std::cout << source.sizes() << std::endl << std::endl;
+//
+//  std::cout << "self GPU" << std::endl;
+//  print(std::cout, self, 120);
+//  std::cout << self.sizes() << std::endl << std::endl;
+
+//  auto self_infoo = cuda::detail::getTensorInfo<float, int64_t>(self);
+//  self_infoo.collapseDims();
+
   AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "xput_cuda_", [&] {
     auto src_iter = thrust::device_ptr<scalar_t>(source.data<scalar_t>());
-    auto dst_iter = thrust::device_ptr<scalar_t>(self.data<scalar_t>());
+    auto dst_iter = thrust::make_discard_iterator(); // thrust::device_ptr<scalar_t>(self.data<scalar_t>());
 
     auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
+    self_info.collapseDims();
+    int64_t* raw_sorted_iter = sorted_index.data<int64_t>();
     TensorPutAccumulateOp<scalar_t> putAccumulateOp(self_info,
-        dstSize, raw_index_iter, raw_index_iter + idxSize);
+        dstSize, raw_sorted_iter, raw_sorted_iter + idxSize);//, self.data<scalar_t>());
+//    thrust::identity<int64_t> identity;
+//    auto count_iter = thrust::counting_iterator<int64_t>(0);
+
+//    thrust::zip_iterator<thrust::tuple<
+//        thrust::counting_iterator<int64_t>,
+//        thrust::device_ptr<int64_t>
+//        >>
+//        count_index_itr(thrust::make_tuple(count_iter, sorted_iter));
+
+//    thrust::transform_if(
+//        policy,
+//        sorted_iter, sorted_iter + idxSize, src_iter,
+//        count_index_itr, dst_iter, putAccumulateOp, putAccumulateOp);
 
     thrust::transform(
         policy,
         sorted_iter, sorted_iter + idxSize, src_iter, dst_iter, putAccumulateOp);
+
   });
 
-*/
+//  std::cout << "---> source GPU" << std::endl;
+//  print(std::cout, source, 120);
+//  std::cout << source.sizes() << std::endl << std::endl;
+//
+//  std::cout << "---> self GPU" << std::endl;
+//  print(std::cout, self, 120);
+//  std::cout << self.sizes() << std::endl << std::endl;
+
+#endif
 
 
 
