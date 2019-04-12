@@ -79,9 +79,6 @@
 
 namespace at { namespace native {
 
-//DEFINE_DISPATCH(index_stub);
-//DEFINE_DISPATCH(index_put_stub);
-
 [[noreturn]]
 static void invalid_mask(const Tensor & self, int64_t idx, const Tensor & mask, int64_t maskIdx) {
   std::stringstream ss;
@@ -286,11 +283,10 @@ static std::tuple<Tensor, Tensor, int64_t, int64_t> makeLinearIndex(Tensor self,
 
 struct WrapIndexOp  : thrust::unary_function<int64_t, int64_t> {
   WrapIndexOp(int64_t size) : size(size) {}
-
   __device__ __forceinline__ int64_t operator()(int64_t idx) {
-//    if(!(idx < size && idx >= -size)) {
-//      printf("!!!!!!!!!!!! %lld %lld\n", idx, size);
-//    }
+if(!(idx < size && idx >= -size)) {
+  printf("!!!!!!!!!!!! %lld %lld\n", idx, size);
+}
     assert(idx < size && idx >= -size);
     return idx < 0 ? idx + size : idx;
   }
@@ -377,17 +373,108 @@ struct TensorPutAccumulateOp : thrust::binary_function<int64_t, T, T> {
   int64_t* end;
 };
 
+template <typename T, typename IT>
+Tensor xslice(const Tensor& src, IT begDim, IT endDim) {
+  if (begDim >= endDim) {
+    AT_INDEX_ERROR("dimensions mismatch: ", begDim, " >= ", endDim);
+  }
+  auto info = cuda::detail::getTensorInfo<T, IT>(src);
+//  IT begOffset(0);
+//  IT endOffset(0);
+  IT dim(0);
+  IT sizes(0);
+  std::vector<IT> subShape(endDim - begDim);
+  for (IT d = 0; d < info.dims; ++d) {
+//    const IT ss = info.sizes[d] * info.strides[d];
+    if (d < begDim) {
+//      begOffset += ss;
+    } else if (d < endDim) {
+      subShape[dim++] = info.sizes[d];
+      sizes += info.sizes[d];
+//      endOffset += ss;
+    } else {
+      break;
+    }
+  }
+//  ArrayRef<T> subValues({src.data<T>() + begOffset, src.data<T>() + endOffset});
+//  ArrayRef<T> subSizes({endOffset - begOffset});
+
+//  std::vector<Tensor> sp = src.split_with_sizes(sizes, begDim);
+//  for (auto t : sp) {
+//    std::cout << t.sizes() << std::endl << std::endl;
+//  }
+
+//  int64_t* ps = src.cpu().data<int64_t>();
+//  std::cout << ps[0] << std::endl;
+//  std::cout << ps[1] << std::endl;
+//  std::cout << ps[2] << std::endl;
+//  std::cout << ps[3] << std::endl;
+//  print(std::cout, src, 120);
+
+  Tensor t = src.slice(1, 0L, info.sizes[0], info.strides[0]).squeeze();
+
+//  print(std::cout, t, 120);
+
+  std::cout << t.sizes() << std::endl << std::endl;
+
+  int64_t* p = t.cpu().data<int64_t>();
+  std::cout << p[0] << std::endl;
+  std::cout << p[1] << std::endl;
+  std::cout << p[2] << std::endl;
+  std::cout << p[3] << std::endl;
+
+  Tensor ret = empty(IntArrayRef(subShape), src.options().device(Device(DeviceType::CUDA)));
+  ret.copy_(t);
+
+  print(std::cout, ret, 120);
+
+  int64_t* ps = ret.data<int64_t>();
+  std::cout << ps[0] << std::endl;
+  std::cout << ps[1] << std::endl;
+  std::cout << ps[2] << std::endl;
+  std::cout << ps[3] << std::endl;
+
+//  auto newOne = at::tensor_cuda(subValues, src.options());
+  return empty(IntArrayRef(subShape), src.options());//.reshape(IntArrayRef(subShape));//.clone();
+}
+//Tensor empty_cpu(IntArrayRef size, const TensorOptions& options) {
+
 Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate,
     int64_t emptyBefore, int64_t emptyAfter) {
-  auto sorted_index = at::empty_like(index);
-  auto orig_index = at::empty_like(index);
+
+//  auto options = TensorOptions(at::kLong).is_variable(self.options().is_variable());
+//  return at::tensor(self.sizes(), options);
+//  IntArrayRef idxSubSizes(index.sizes().begin() + emptyBefore, index.sizes().begin() + emptyAfter);
+
+//  std::cout << idxSubSizes << std::endl << std::endl;
+//  std::cout << indexInfo.dims << std::endl << std::endl;
+//  TensorOptions indexOptions = index.options();
+//  std::cout << indexOptions << std::endl << std::endl;
+
+  auto sorted_index = xslice<int64_t,int64_t>(index, emptyBefore, emptyAfter);  ///at::empty_like(index);
+  auto orig_index = xslice<int64_t,int64_t>(index, emptyBefore, emptyAfter);   ///at::empty_like(index);
   int64_t dstSize = self.numel();
   int64_t idxSize = index.numel();
-  orig_index.copy_(index);
+
+//  std::vector<Tensor> spi = index.split_with_sizes(idxSubSizes);
+//  for (auto t : spi) {
+//    std::cout << t.sizes() << std::endl << std::endl;
+//  }
+
+ // orig_index.copy_(index.view(idxSubSizes));
 
   auto index_iter = thrust::device_ptr<int64_t>(orig_index.data<int64_t>());
   auto sorted_iter = thrust::device_ptr<int64_t>(sorted_index.data<int64_t>());
   auto numel = source.numel();
+
+  std::cout << sorted_index.sizes() << std::endl << std::endl;
+
+  std::cout << "sorted_index" << std::endl;
+//  print(std::cout, source, 120);
+  std::cout << sorted_index.sizes() << std::endl << std::endl;
+  std::cout << "orig_index" << std::endl;
+//  print(std::cout, source, 120);
+  std::cout << orig_index.sizes() << std::endl << std::endl;
 
   if (numel != idxSize) {
     AT_INDEX_ERROR("src should have the same number of elements as index: ",
@@ -397,6 +484,22 @@ Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   auto allocator = THCThrustAllocator(globalContext().lazyInitCUDA());
   auto policy = thrust::cuda::par(allocator).on(stream);
+
+//  std::cout << "source GPU" << std::endl;
+////  print(std::cout, source, 120);
+//  std::cout << source.sizes() << std::endl << std::endl;
+//
+//  std::cout << "self GPU" << std::endl;
+////  print(std::cout, self, 120);
+//  std::cout << self.sizes() << std::endl << std::endl;
+//
+//  std::cout << "index GPU" << std::endl;
+////  print(std::cout, source, 120);
+//  std::cout << index.sizes() << std::endl << std::endl;
+
+//  auto self_infoo = cuda::detail::getTensorInfo<float, int64_t>(self);
+//  self_infoo.collapseDims();
+
 
   AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "xput_cuda_", [&] {
     auto src_iter = thrust::device_ptr<scalar_t>(source.data<scalar_t>());
