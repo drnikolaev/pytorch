@@ -310,8 +310,8 @@ inline Tensor & Tensor::index_put_(TensorList indices, const Tensor & values, bo
 inline Tensor Tensor::index_put(TensorList indices, const Tensor & values, bool accumulate) const {
     return dispatch_type().index_put(*this, indices, values, accumulate);
 }
-inline Tensor & Tensor::xput_(const Tensor & index, const Tensor & source, bool accumulate, int64_t emptyBefore, int64_t emptyAfter) {
-    return dispatch_type().xput_(*this, index, source, accumulate, emptyBefore, emptyAfter);
+inline Tensor & Tensor::xput_(const Tensor & index, const Tensor & source, bool accumulate, const Tensor & beforeIndex, const Tensor & afterIndex) {
+    return dispatch_type().xput_(*this, index, source, accumulate, beforeIndex, afterIndex);
 }
 inline Tensor Tensor::inverse() const {
     return dispatch_type().inverse(*this);

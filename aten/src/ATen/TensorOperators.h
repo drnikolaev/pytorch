@@ -93,7 +93,7 @@ static inline Tensor operator op(Scalar x, const Tensor & y) { \
 }
 
 
-AT_FORALL_BINARY_OPS(DEFINE_OPERATOR)
+  AT_FORALL_BINARY_OPS(DEFINE_OPERATOR)
 #undef DEFINE_OPERATOR
 #undef AT_FORALL_BINARY_OPS
 

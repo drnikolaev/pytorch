@@ -27,6 +27,9 @@
 #include <queue>
 #include <TH/TH.h>
 
+#include <chrono>
+#include <unordered_map>
+
 namespace torch { namespace autograd {
 
 // NB: -1 indicates the CPU worker!
@@ -387,6 +390,9 @@ static void validate_outputs(const edge_list& edges, variable_list& grads, const
   }
 }
 
+//std::unordered_map<std::string, long long> total;
+//std::unordered_map<std::string, long> cnt;
+
 static variable_list call_function(FunctionTask& task) {
   bool prev_checkpoint_valid_state = checkpoint_valid;
   checkpoint_valid = task.base->can_checkpoint() && prev_checkpoint_valid_state;
@@ -416,7 +422,28 @@ static variable_list call_function(FunctionTask& task) {
     auto inputs_copy = inputs;
     outputs = fn(std::move(inputs_copy));
   }else{
+
+//    std::string fname = task.fn->name();
+//    auto start = std::chrono::high_resolution_clock::now();
+
     outputs = fn(std::move(inputs));
+
+//    auto finish = std::chrono::high_resolution_clock::now();
+//    auto t = std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count();
+//    if (total.count(fname) > 0) {
+//      total[fname] += t;
+//    } else {
+//      total[fname] = t;
+//    }
+//    if (cnt.count(fname) > 0) {
+//      cnt[fname] += 1L;
+//    } else {
+//      cnt[fname] = 1L;
+//    }
+//    if (cnt[fname] % 100 == 0) {
+//      std::cerr << fname << " " << t / 1000 << "us, avg: " << total[fname] / cnt[fname] / 1000
+//                << "us" << std::endl;;
+//    }
   }
 
   validate_outputs(fn.next_edges(), outputs, [&](const std::string& msg) {

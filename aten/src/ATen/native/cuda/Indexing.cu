@@ -73,6 +73,11 @@
 #include <thrust/execution_policy.h>
 #include <thrust/unique.h>
 #include <thrust/iterator/discard_iterator.h>
+#include <thrust/device_vector.h>
+#include <thrust/copy.h>
+#include <thrust/fill.h>
+#include <thrust/sequence.h>
+
 #include <torch/csrc/utils/tensor_flatten.h>
 
 #include <ATen/cpu/vec256/vec256.h>
@@ -178,31 +183,17 @@ static std::vector<int64_t> computeLinearStride(const Tensor & tensor) {
 }
 
 // Unsqueezes src `before` times at the front and `after` times at the end
-static Tensor unsqueezeN(const Tensor & src, int64_t before, int64_t after) {
-  auto srcSizes = src.sizes();
-  auto nDim = src.dim();
-  std::vector<int64_t> sizes(nDim + before + after, 1);
-  for (int64_t i = 0; i < nDim; i++) {
-    sizes[i + before] = srcSizes[i];
-  }
-  return src.view(sizes);
-}
+//static Tensor unsqueezeN(const Tensor & src, int64_t before, int64_t after) {
+//  auto srcSizes = src.sizes();
+//  auto nDim = src.dim();
+//  std::vector<int64_t> sizes(nDim + before + after, 1);
+//  for (int64_t i = 0; i < nDim; i++) {
+//    sizes[i + before] = srcSizes[i];
+//  }
+//  return src.view(sizes);
+//}
 
-static Tensor wrapIndexOnce(const Tensor & index, int64_t dim, int64_t dim_size) {
-  if (index.numel() != 0) {
-    auto max_idx = index.max().item<int64_t>();
-    auto min_idx = index.min().item<int64_t>();
-    if (max_idx >= dim_size) {
-      AT_INDEX_ERROR("index ", max_idx, " is out of bounds for dimension ", dim, " with size ", dim_size);
-    }
-    if (min_idx < -dim_size) {
-      AT_INDEX_ERROR("index ", min_idx, " is out of bounds for dimension ", dim, " with size ", dim_size);
-    }
-  }
-  return index.remainder(dim_size);
-}
-
-static std::tuple<Tensor, Tensor, int64_t, int64_t> makeLinearIndex(Tensor self, TensorList orig) {
+static std::tuple<Tensor, Tensor, Tensor, Tensor> makeLinearIndex(Tensor self, TensorList orig) {
   checkIndexTensorTypes(orig);
   // first expand ByteTensor (boolean masks) into 1 or more LongTensors
   auto indices = expandByteTensors(self, orig);
@@ -218,17 +209,6 @@ static std::tuple<Tensor, Tensor, int64_t, int64_t> makeLinearIndex(Tensor self,
     std::tie(self, indices) = transposeToFront(self, indices);
   }
 
-  for (size_t i = 0; i < orig.size(); i++) {
-    if (!orig[i].defined()) {
-      continue;
-    }
-  }
-  for (size_t i = 0; i < indices.size(); i++) {
-    if (!indices[i].defined()) {
-      continue;
-    }
-  }
-
   auto strides = computeLinearStride(self);
 
   // Compute the linear index by multiplying the indexing tensors by the
@@ -239,15 +219,13 @@ static std::tuple<Tensor, Tensor, int64_t, int64_t> makeLinearIndex(Tensor self,
   int64_t emptyBefore = 0, emptyAfter = 0, nElemBefore = 1, nElemAfter = 1;
   for (int64_t i = 0; i < self.dim(); i++) {
     if (indices[i].defined()) {
-      // Cast index to the longType matching self's backend
-      // This allows us to support ie indexing a cuda tensor with a cpu tensor
-      Tensor index = (wrapIndexOnce(indices[i], i, self.size(i)) * strides[i]).to(kLong);
       if (linearIndex.defined()) {
-        linearIndex += index;
+        linearIndex += indices[i].remainder(self.size(i)) * strides[i];
       } else {
-        linearIndex = index;
+        linearIndex = indices[i].remainder(self.size(i)) * strides[i];
       }
-    } else if (linearIndex.defined()) {
+    }
+    else if (linearIndex.defined()) {
       emptyAfter++;
       nElemAfter *= self.size(i);
     } else {
@@ -255,304 +233,172 @@ static std::tuple<Tensor, Tensor, int64_t, int64_t> makeLinearIndex(Tensor self,
       nElemBefore *= self.size(i);
     }
   }
-
   // Compute the linear indices for the parts of the tensor not being indexed
+  // ...and not being sorted
   Tensor beforeIndex;
   if (emptyBefore > 0) {
-    auto index = at::arange(0, nElemBefore, self.options().dtype(kLong)) * strides[emptyBefore - 1];
-    index = index.view(self.sizes().slice(0, emptyBefore));
-    beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
+    beforeIndex = at::arange(0, nElemBefore, self.options().dtype(kLong)) * strides[emptyBefore - 1];
+    //      index = index.view(src.sizes().slice(0, emptyBefore));
+    //      beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
   }
   Tensor afterIndex;
   if (emptyAfter > 0) {
-    auto index = at::arange(0, nElemAfter, self.options().dtype(kLong));
-    index = index.view(self.sizes().slice(self.dim() - emptyAfter, emptyAfter));
-    afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
+    afterIndex = at::arange(0, nElemAfter, self.options().dtype(kLong));
+    //      index = index.view(src.sizes().slice(src.dim() - emptyAfter, emptyAfter));
+    //      afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
   }
-
-  // Sum with broadcasting to compute the full index
-  linearIndex = unsqueezeN(linearIndex, emptyBefore, emptyAfter);
-  if (beforeIndex.defined()) {
-    linearIndex = linearIndex + beforeIndex;
-  }
-  if (afterIndex.defined()) {
-    linearIndex = linearIndex + afterIndex;
-  }
-
-  return std::make_tuple(self, linearIndex, emptyBefore, emptyAfter);
+  return std::make_tuple(self, linearIndex, beforeIndex, afterIndex);
 }
-
-struct WrapIndexOp  : thrust::unary_function<int64_t, int64_t> {
-  WrapIndexOp(int64_t size) : size(size) {}
-  __device__ __forceinline__ int64_t operator()(int64_t idx) {
-if(!(idx < size && idx >= -size)) {
-  printf("!!!!!!!!!!!! %lld %lld\n", idx, size);
-}
-    assert(idx < size && idx >= -size);
-    return idx < 0 ? idx + size : idx;
-  }
-
-  int64_t size;
-};
-
-// Translate a linear index for the apply to a T* offset;
-// specialized on `Dims` to reduce nvcc compilation time
-template <typename T, typename IndexType>
-struct IndexToOffset {
-  static __host__ __device__ IndexType get(
-      IndexType linearId,
-      const at::cuda::detail::TensorInfo<T, IndexType>& info) {
-    IndexType offset = 0;
-    for (int i = info.dims - 1; i > 0; --i) {
-      IndexType curDimIndex = linearId % info.sizes[i];
-      IndexType curDimOffset = curDimIndex * info.strides[i];
-      offset += curDimOffset;
-      linearId /= info.sizes[i];
-    }
-    return offset + linearId * info.strides[0];
-  }
-};
 
 template <typename T, typename IndexType>
 __device__ __forceinline__ IndexType indexToOffset(
-    const at::cuda::detail::TensorInfo<T, IndexType>& info,
-    int64_t index,
-    IndexType size)
-{
-  IndexType linearIndex = static_cast<IndexType>(index);
-
-  if (!(linearIndex < size && linearIndex >= -size)) {
-    printf("*************** %lld %lld\n", linearIndex, size);
+    const at::cuda::detail::TensorInfo<T, IndexType>& info, IndexType linearIndex) {
+  IndexType offset(0);
+  for (int i = info.dims - 1; i > 0; --i) {
+    offset += (linearIndex % info.sizes[i]) * info.strides[i];
+    linearIndex /= info.sizes[i];
   }
-
-  assert(linearIndex < size && linearIndex >= -size);
-  if (linearIndex < 0) {
-    linearIndex += size;
-  }
-  return IndexToOffset<T, IndexType>::get(linearIndex, info);
+  return offset + linearIndex * info.strides[0];
 }
 
-template <typename T>
-struct TensorPutOp : thrust::binary_function<int64_t, T, T> {
-  TensorPutOp(at::cuda::detail::TensorInfo<T, int64_t> info, int64_t numel, int64_t*, int64_t*)
-      : info(info), numel(numel) {}
-
-  __device__ __forceinline__ T operator()(int64_t& index, T& value) {
-    auto offset = indexToOffset<T, int64_t>(info, index, numel);
-    info.data[offset] = value;
-    return 0;  // discarded
-  }
-
-  const at::cuda::detail::TensorInfo<T, int64_t> info;
-  int64_t numel;
-};
 
 template <typename T>
-struct TensorPutAccumulateOp : thrust::binary_function<int64_t, T, T> {
-  TensorPutAccumulateOp(at::cuda::detail::TensorInfo<T, int64_t> info, int64_t numel,
-      int64_t* start, int64_t* end)
-    : info(info), numel(numel), start(start), end(end) {}
+struct TensorPutOp : thrust::unary_function<int64_t, T> {
 
-  __device__ __forceinline__ T operator()(int64_t& index, T& value) {
-    int64_t* pindex = &index;
-    T* pvalue = &value;
-    if (pindex == start || *pindex != *(pindex - 1)) {
+  TensorPutOp(at::cuda::detail::TensorInfo<T, int64_t> info, bool accumulate,
+      const T* psrc, const int64_t* sorted_idx_beg, const int64_t* sorted_idx_end,
+      const int64_t* beforeIndex, int64_t elementsBefore,
+      const int64_t* afterIndex, int64_t elementsAfter)
+    : info(info), accumulate(accumulate), psrc(psrc),
+      sorted_idx_beg(sorted_idx_beg), sorted_idx_end(sorted_idx_end),
+      beforeIndex(beforeIndex), elementsBefore(elementsBefore),
+      afterIndex(afterIndex), elementsAfter(elementsAfter) {}
+
+//  __device__ __forceinline__ T operator()(int64_t& e) {
+//
+//    pvalue = psrc + orig_idx;
+//    int64_t eoffset = beforeIndex[e];
+//    if (accumulate) {
+//      info.data[offset + eoffset] += *pvalue;
+//    } else {
+//      info.data[offset + eoffset] = *pvalue;
+//    }
+//    pvalue += elementsBefore;
+//
+//
+//    return 0;  // discarded
+//  }
+
+  __device__ __forceinline__ T operator()(int64_t& sorted_idx, int64_t& orig_idx) {
+
+    const T* pvalue = psrc + orig_idx;
+    const int64_t offset = indexToOffset<T, int64_t>(info, sorted_idx);
+
+    if (elementsBefore == 0 && elementsAfter == 0) {
+      // all dimensions indexed
+      int64_t* pindex = &sorted_idx;
       int64_t linear_index = *pindex;
-      int64_t offset = indexToOffset<T, int64_t>(info, linear_index, numel);
       do {
         info.data[offset] += *pvalue;
         pindex++;
         pvalue++;
-      } while (pindex != end && *pindex == linear_index);
+      } while (pindex != sorted_idx_end && *pindex == linear_index);
+      return 0;  // discarded
+    }
+
+    pvalue = psrc + orig_idx;
+    for (int64_t e = 0; e < elementsBefore; ++e) {
+      int64_t eoffset = beforeIndex[e];
+      if (accumulate) {
+        info.data[offset + eoffset] += *pvalue;
+      } else {
+        info.data[offset + eoffset] = *pvalue;
+      }
+      pvalue += elementsBefore;
+    }
+
+    pvalue = psrc + orig_idx * elementsAfter;
+    for (int64_t e = 0; e < elementsAfter; ++e) {
+      int64_t eoffset = afterIndex[e];
+      if (accumulate) {
+        info.data[offset + eoffset] += *pvalue;
+      } else {
+        info.data[offset + eoffset] = *pvalue;
+      }
+      pvalue++;
     }
     return 0;  // discarded
   }
 
   const at::cuda::detail::TensorInfo<T, int64_t> info;
-  int64_t numel;
-  int64_t* start;
-  int64_t* end;
+  const bool accumulate;
+  const T* psrc;
+  const int64_t* sorted_idx_beg;
+  const int64_t* sorted_idx_end;
+  const int64_t* beforeIndex;
+  const int64_t elementsBefore;
+  const int64_t* afterIndex;
+  const int64_t elementsAfter;
 };
 
-template <typename T, typename IT>
-Tensor xslice(const Tensor& src, IT begDim, IT endDim, bool copyValues) {
-  if (begDim >= endDim) {
-    AT_INDEX_ERROR("dimensions mismatch: ", begDim, " >= ", endDim);
-  }
-  auto info = cuda::detail::getTensorInfo<T, IT>(src);
-//  IT begOffset(0);
-//  IT endOffset(0);
-  IT dim(0);
-  IT sizes(0);
-  std::vector<IT> subShape(endDim - begDim);
-  for (IT d = 0; d < info.dims; ++d) {
-//    const IT ss = info.sizes[d] * info.strides[d];
-    if (d < begDim) {
-//      begOffset += ss;
-    } else if (d < endDim) {
-      subShape[dim++] = info.sizes[d];
-      sizes += info.sizes[d];
-//      endOffset += ss;
-    } else {
-      break;
-    }
-  }
-//  ArrayRef<T> subValues({src.data<T>() + begOffset, src.data<T>() + endOffset});
-//  ArrayRef<T> subSizes({endOffset - begOffset});
-
-//  std::vector<Tensor> sp = src.split_with_sizes(sizes, begDim);
-//  for (auto t : sp) {
-//    std::cout << t.sizes() << std::endl << std::endl;
-//  }
-
-//  int64_t* ps = src.cpu().data<int64_t>();
-//  std::cout << ps[0] << std::endl;
-//  std::cout << ps[1] << std::endl;
-//  std::cout << ps[2] << std::endl;
-//  std::cout << ps[3] << std::endl;
-//  print(std::cout, src, 120);
-
-
-//  print(std::cout, t, 120);
-//  std::cout << t.sizes() << std::endl << std::endl;
-
-//  int64_t* p = t.cpu().data<int64_t>();
-//  std::cout << p[0] << std::endl;
-//  std::cout << p[1] << std::endl;
-//  std::cout << p[2] << std::endl;
-//  std::cout << p[3] << std::endl;
-
-//  Tensor ret = empty(IntArrayRef(subShape), src.options().device(Device(DeviceType::CPU)));
-  Tensor ret = empty(IntArrayRef(subShape), src.options());
-  if (copyValues) {
-    Tensor t = src.slice(1, 0L, info.sizes[0], info.strides[0]).squeeze();
-    ret.copy_(t);
-  }
-
-//  print(std::cout, ret, 120);
-//
-//  int64_t* ps = ret.data<int64_t>();
-//  std::cout << ps[0] << std::endl;
-//  std::cout << ps[1] << std::endl;
-//  std::cout << ps[2] << std::endl;
-//  std::cout << ps[3] << std::endl;
-//  auto newOne = at::tensor_cuda(subValues, src.options());
-
-  return ret; //empty(IntArrayRef(subShape), src.options());//.reshape(IntArrayRef(subShape));//.clone();
-}
-//Tensor empty_cpu(IntArrayRef size, const TensorOptions& options) {
-
 Tensor & xput_cuda_(Tensor & self, const Tensor & index, const Tensor & source, bool accumulate,
-    int64_t emptyBefore, int64_t emptyAfter) {
+    const Tensor & beforeIndex, const Tensor & afterIndex) {
 
-//  auto options = TensorOptions(at::kLong).is_variable(self.options().is_variable());
-//  return at::tensor(self.sizes(), options);
-//  IntArrayRef idxSubSizes(index.sizes().begin() + emptyBefore, index.sizes().begin() + emptyAfter);
-
-//  std::cout << idxSubSizes << std::endl << std::endl;
-//  std::cout << indexInfo.dims << std::endl << std::endl;
-//  TensorOptions indexOptions = index.options();
-//  std::cout << indexOptions << std::endl << std::endl;
-
-  auto sorted_index = xslice<int64_t,int64_t>(index, emptyBefore, emptyAfter, false);  ///at::empty_like(index);
-  auto orig_index = xslice<int64_t,int64_t>(index, emptyBefore, emptyAfter, true);   ///at::empty_like(index);
+  auto sorted_index = index.clone();
+  auto orig_index = at::empty_like(index);
   int64_t dstSize = self.numel();
   int64_t idxSize = index.numel();
-  int64_t idxEffSize = orig_index.numel();
 
-//  std::cout << idxEffSize << std::endl;
+  auto orig_index_iter = thrust::device_ptr<int64_t>(orig_index.data<int64_t>());
+  auto sorted_index_iter = thrust::device_ptr<int64_t>(sorted_index.data<int64_t>());
 
-  //  std::vector<Tensor> spi = index.split_with_sizes(idxSubSizes);
-//  for (auto t : spi) {
-//    std::cout << t.sizes() << std::endl << std::endl;
-//  }
-
- // orig_index.copy_(index.view(idxSubSizes));
-
-  auto index_iter = thrust::device_ptr<int64_t>(orig_index.data<int64_t>());
-  auto sorted_iter = thrust::device_ptr<int64_t>(sorted_index.data<int64_t>());
-  auto numel = source.numel();
-
-
-//  std::cout << "ss" << std::endl;
-//  print(std::cout, ss, 120);
-//  std::cout << ss.sizes() << std::endl << std::endl;
-//
-//  std::cout << "self" << std::endl;
-//  print(std::cout, self, 120);
-//  std::cout << self.sizes() << std::endl << std::endl;
-
-//  std::cout << sorted_index.sizes() << std::endl << std::endl;
-//  std::cout << "sorted_index" << std::endl;
-////  print(std::cout, source, 120);
-//  std::cout << sorted_index.sizes() << std::endl << std::endl;
-//  std::cout << "orig_index" << std::endl;
-////  print(std::cout, source, 120);
-//  std::cout << orig_index.sizes() << std::endl << std::endl;
-
-  if (numel != idxSize) {
-    AT_INDEX_ERROR("src should have the same number of elements as index: ",
-        numel, " != ", idxSize);
-  }
+  const int64_t* sorted_idx_beg = sorted_index.data<int64_t>();
+  const int64_t* sorted_idx_end = sorted_idx_beg + idxSize;
+  const int64_t* beforeIndexPtr = beforeIndex.defined() ? beforeIndex.data<int64_t>() : nullptr;
+  const int64_t  elementsBefore = beforeIndex.defined() ? beforeIndex.numel() : 0L;
+  const int64_t* afterIndexPtr  = afterIndex.defined()  ? afterIndex.data<int64_t>() : nullptr;
+  const int64_t  elementsAfter  = afterIndex.defined()  ? afterIndex.numel() : 0L;
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   auto allocator = THCThrustAllocator(globalContext().lazyInitCUDA());
   auto policy = thrust::cuda::par(allocator).on(stream);
 
-//  std::cout << "source GPU" << std::endl;
-////  print(std::cout, source, 120);
-//  std::cout << source.sizes() << std::endl << std::endl;
-//
-//  std::cout << "self GPU" << std::endl;
-////  print(std::cout, self, 120);
-//  std::cout << self.sizes() << std::endl << std::endl;
-//
-//  std::cout << "index GPU" << std::endl;
-////  print(std::cout, source, 120);
-//  std::cout << index.sizes() << std::endl << std::endl;
-
-//  auto self_infoo = cuda::detail::getTensorInfo<float, int64_t>(self);
-//  self_infoo.collapseDims();
-
-
   AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "xput_cuda_", [&] {
-    auto xs = xslice<scalar_t,int64_t>(source, emptyBefore, emptyAfter, true);  ///at::empty_like(index);
-    auto src_iter = thrust::device_ptr<scalar_t>(xs.data<scalar_t>());
-
+    auto src_iter = thrust::device_ptr<scalar_t>(source.data<scalar_t>());
     auto dst_iter = thrust::make_discard_iterator(); // we directly write to info.data
     auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
-    //self_info.collapseDims();
-    int64_t* raw_sorted_iter = sorted_index.data<int64_t>();
+    TensorPutOp<scalar_t> putOp(self_info, accumulate, source.data<scalar_t>(),
+        sorted_idx_beg, sorted_idx_end, beforeIndexPtr, elementsBefore, afterIndexPtr, elementsAfter);
 
-    if (accumulate) {
-      WrapIndexOp wrapIndexOp(dstSize);
-      TensorPutAccumulateOp<scalar_t> putAccumulateOp(self_info,
-          dstSize, raw_sorted_iter, raw_sorted_iter + idxEffSize);
+    thrust::sequence(orig_index_iter, orig_index_iter + idxSize);
 
-      thrust::transform(
-          policy,
-          index_iter, index_iter + idxEffSize, sorted_iter, wrapIndexOp);
+    thrust::sort_by_key(
+        policy,
+        sorted_index_iter, sorted_index_iter + idxSize, orig_index_iter, ThrustLTOp<int64_t>());
 
-      thrust::sort_by_key(
-          policy,
-          sorted_iter, sorted_iter + idxEffSize, src_iter, ThrustLTOp<int64_t>());
+    // TODO: for_each
+    thrust::transform(
+        policy,
+        sorted_index_iter,
+        sorted_index_iter + idxSize,
+        orig_index_iter,
+        dst_iter, putOp);
 
-      thrust::transform(
-          policy,
-          sorted_iter, sorted_iter + idxEffSize, src_iter, dst_iter, putAccumulateOp);
+//    auto first = thrust::make_zip_iterator(thrust::make_tuple(
+//        sorted_index_iter, orig_index_iter));
+//    auto last = thrust::make_zip_iterator(thrust::make_tuple(
+//        sorted_index_iter + idxSize, orig_index_iter + idxSize))    ;
+//    thrust::for_each(policy, first, last, putOp);
 
-    } else {
-      TensorPutOp<scalar_t> putOp(self_info,
-          dstSize, raw_sorted_iter, raw_sorted_iter + idxSize);
-
-      thrust::transform(
-          policy,
-          index_iter, index_iter + idxSize, src_iter, dst_iter, putOp);
-    }
   });
 
   return self;
 }
+
+
+//long long mtotal = 0;
+//long long xtotal = 0;
+//long pcnt = 0;
 
 Tensor & index_put_cuda_(Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
   if (indices.size() > (size_t)self.dim()) {
@@ -560,10 +406,38 @@ Tensor & index_put_cuda_(Tensor & self, TensorList indices, const Tensor & value
   }
 
   Tensor src, linearIndex, expandedValue;
-  int64_t emptyBefore, emptyAfter;
-  std::tie(src, linearIndex, emptyBefore, emptyAfter) = makeLinearIndex(self, indices);
-  std::tie(expandedValue) = expand_inplace(linearIndex, value);
-  return src.xput_(linearIndex, expandedValue, accumulate, emptyBefore, emptyAfter);
+  Tensor beforeIndex, afterIndex;
+
+//  ++pcnt;
+//  auto start = std::chrono::high_resolution_clock::now();
+
+  std::tie(src, linearIndex, beforeIndex, afterIndex) = makeLinearIndex(self, indices);
+
+//  auto finish = std::chrono::high_resolution_clock::now();
+//
+//  mtotal += std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count();
+//  if (pcnt % 100 == 0) {
+//    std::cout << "makeLinearIndex: "
+//              << mtotal/pcnt/1000
+//              << "us" << std::endl;;
+//  }
+
+
+//  std::tie(expandedValue) = expand_inplace(linearIndex, value);
+
+//  start = std::chrono::high_resolution_clock::now();
+  Tensor & ret = src.xput_(linearIndex, value, accumulate, beforeIndex, afterIndex);
+//  finish = std::chrono::high_resolution_clock::now();
+//
+//  xtotal += std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count();
+//  if (pcnt % 100 == 0) {
+//    std::cout << "xput: "
+//              << xtotal/pcnt/1000
+//              << "us" << std::endl;;
+//  }
+
+  return ret;
+//  return src.xput_(linearIndex, value, accumulate);
 }
 
 }}
