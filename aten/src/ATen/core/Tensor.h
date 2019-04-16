@@ -418,7 +418,6 @@ class CAFFE2_API Tensor {
   Tensor index_copy(int64_t dim, const Tensor & index, const Tensor & source) const;
   Tensor & index_put_(TensorList indices, const Tensor & values, bool accumulate=false);
   Tensor index_put(TensorList indices, const Tensor & values, bool accumulate=false) const;
-  Tensor & xput_(const Tensor & index, const Tensor & source, bool accumulate, const Tensor & beforeIndex, const Tensor & afterIndex, int64_t emptyBefore, int64_t emptyAfter);
   Tensor inverse() const;
   Tensor isclose(const Tensor & other, double rtol=1e-05, double atol=1e-08, bool equal_nan=false) const;
   bool is_distributed() const;

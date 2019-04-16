@@ -1151,13 +1151,6 @@
   matches_jit_signature: True
   variants: function, method
 
-- func: xput_(Tensor(a!) self, Tensor index, Tensor? source, bool accumulate, Tensor(a!) beforeIndex, Tensor(a!) afterIndex, int emptyBefore, int emptyAfter) -> Tensor(a!)
-  matches_jit_signature: True
-  variants: function, method
-  dispatch:
-    CPU: xput_
-    CUDA: xput_cuda_
-
 - func: instance_norm(Tensor input, Tensor? weight, Tensor? bias, Tensor? running_mean, Tensor? running_var, bool use_input_stats, float momentum, float eps, bool cudnn_enabled) -> Tensor
   matches_jit_signature: True
   variants: function
