@@ -203,39 +203,13 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
   int64_t emptyBefore = 0, emptyAfter = 0, nElemBefore = 1, nElemAfter = 1;
   for (int64_t i = 0; i < src.dim(); i++) {
     if (indices[i].defined()) {
-
-//      print(std::cout, indices[i], 120);
-//      std::cout << std::endl << std::endl;
-
-
       // Cast index to the longType matching src's backend
       // This allows us to support ie indexing a cuda tensor with a cpu tensor
       Tensor index = (wrapIndexOnce(indices[i], i, src.size(i)) * strides[i]).to(kLong);
-
-//      print(std::cout, index, 120);
-//      std::cout << std::endl << std::endl;
-
-
-      //      std::cerr << i << " " << indices[i] << std::endl << std::endl;
-//      std::cerr << i << " " << strides[i] << std::endl << std::endl;
-//
-//      std::cerr << "index" << std::endl;
-//      print(std::cerr, index, 120);
-//      std::cerr << index.sizes() << std::endl << std::endl;
-
       if (linearIndex.defined()) {
         linearIndex += index;
-
-//        print(std::cout, linearIndex, 120);
-//        std::cout << std::endl << std::endl;
-
       } else {
-
         linearIndex = index;
-
-//        print(std::cout, linearIndex, 120);
-//        std::cout << std::endl << std::endl;
-
       }
     } else if (linearIndex.defined()) {
       emptyAfter++;
@@ -250,75 +224,24 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
   Tensor beforeIndex;
   if (emptyBefore > 0) {
     auto index = at::arange(0, nElemBefore, src.options().dtype(kLong)) * strides[emptyBefore - 1];
-
-//    print(std::cout, index, 120);
-//    std::cout << std::endl << std::endl;
-
     index = index.view(src.sizes().slice(0, emptyBefore));
-
-//    print(std::cout, index, 120);
-//    std::cout << std::endl << std::endl;
-
     beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
-
-//    std::cerr << "beforeIndex  --->>" << std::endl;
-//    print(std::cerr, beforeIndex, 120);
-//    std::cerr << beforeIndex.sizes() << " emptyBefore: " << emptyBefore
-//      << " nElemBefore: " << nElemBefore<< std::endl << std::endl;
-
   }
   Tensor afterIndex;
   if (emptyAfter > 0) {
     auto index = at::arange(0, nElemAfter, src.options().dtype(kLong));
-
-//    print(std::cout, index, 120);
-//    std::cout << std::endl << std::endl;
-
-
     index = index.view(src.sizes().slice(src.dim() - emptyAfter, emptyAfter));
-
-//    print(std::cout, index, 120);
-//    std::cout << std::endl << std::endl;
-
     afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
-
-//    print(std::cout, afterIndex, 120);
-//    std::cout << std::endl << std::endl;
-
-//    std::cerr << "afterIndex  --->>" << std::endl;
-//    print(std::cerr, afterIndex, 120);
-//    std::cerr << afterIndex.sizes() << " emptyAfter: " << emptyAfter
-//      << " nElemAfter: " << nElemAfter<< std::endl << std::endl;
-
   }
-
-//  std::cerr << "linearIndex  --->>" << std::endl;
-//  print(std::cerr, linearIndex, 120);
-//  std::cerr << linearIndex.sizes() << std::endl << std::endl;
 
   // Sum with broadcasting to compute the full index
   linearIndex = unsqueezeN(linearIndex, emptyBefore, emptyAfter);
   if (beforeIndex.defined()) {
     linearIndex = linearIndex + beforeIndex;
-
-//    print(std::cout, linearIndex, 120);
-//    std::cout << std::endl << std::endl;
-//
   }
   if (afterIndex.defined()) {
     linearIndex = linearIndex + afterIndex;
-
-//    print(std::cout, linearIndex, 120);
-//    std::cout << std::endl << std::endl;
-
   }
-
-  std::cout << "linearIndex CPU" << std::endl;
-  print(linearIndex, 120);
-  std::cout << std::endl << "strides: "
-            << computeLinearStride(linearIndex) << std::endl << std::endl;
-
-
   return linearIndex;
 }
 
@@ -534,41 +457,9 @@ Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, boo
   }
   if (accumulate) { // && self.type().device_type() == kCUDA) {
     Tensor src, linearIndex, expandedValue;
-
-//    std::cout << "self CPU" << std::endl;
-//    print(std::cout, self, 120);
-//    std::cout << std::endl << std::endl;
-//
-//    std::cout << "value CPU" << std::endl;
-//    print(std::cout, value, 120);
-//    std::cout << std::endl << std::endl;
-
-
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
-
-//    std::cout << "src CPU" << std::endl;
-//    print(std::cout, src, 120);
-//    std::cout << std::endl << std::endl;
-//
-//    std::cout << "linearIndex CPU" << std::endl;
-//    print(std::cout, linearIndex, 120);
-//    std::cout << std::endl << std::endl;
-
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
-
-//    std::cout << "expandedValue CPU" << std::endl;
-//    print(std::cout, expandedValue, 120);
-//    std::cout << std::endl << std::endl;
-
-
     Tensor& ret = src.put_(linearIndex, expandedValue, true);
-
-//    std::cout << "ret CPU" << std::endl;
-//    print(std::cout, ret, 120);
-//    std::cout << std::endl << std::endl;
-
-
-
     return ret;
   }
   auto info = make_info(self, indices);
