@@ -269,47 +269,36 @@ struct TensorAccumMixedPutOp : thrust::unary_function<int64_t, T> {
   const T* psrc,
   const int64_t* ext_idx_beg, const int64_t* ext_idx_end,
   const int64_t* orig_idx_beg, int64_t sortedStride,
-  int64_t sortedSize)
+  int64_t sortedSize, bool before)
   : info(info), p_source(psrc),
   ext_idx_beg(ext_idx_beg), ext_idx_end(ext_idx_end),
   orig_idx_beg(orig_idx_beg), sortedStride(sortedStride),
-  sortedSize(sortedSize) {}
-
-//  __device__ __forceinline__
-//  T operator()(thrust::tuple <int64_t, T> tuple_idx) {
-//    const int64_t idx = thrust::get<0>(tuple_idx);
-//    const int64_t offset = indexToOffset < T, int64_t>(info, idx);
-//    const T value = thrust::get<1>(tuple_idx);  // orig_idx
-//    info.data[offset] += value;
-//    return 0;  // discarded
-//  }
-
-//  int64_t no = orig_idx_beg[n / lindexStride] * lindexStride + (n % lindexStride);
+  sortedSize(sortedSize), before(before) {}
 
   __device__ __forceinline__
   T operator()(int64_t n) {
 
-    printf("%lld %lld %lld %lld \n",n , sortedStride, n / sortedStride, orig_idx_beg[n]);
-
-    const int64_t no = orig_idx_beg[n / sortedStride] * sortedStride + (n % sortedStride);
-//    const int64_t ino = no / sortedSize;
+    const int64_t sortedno = n / sortedStride;
+    const int64_t unsorted = orig_idx_beg[sortedno % sortedSize];
+    const int64_t no = unsorted * sortedStride + (n % sortedStride);
     const T* pvalue = p_source + no;
     const int64_t* pindex = ext_idx_beg + no;
     const int64_t linear_index = *pindex;
     const int64_t offset = indexToOffset<T, int64_t>(info, linear_index);
+    atomicAdd(info.data + offset, *pvalue);
 
-    printf("%lld %lld %lld %lld %g\n", n , no, linear_index, offset, *pvalue);
 
-
-    if (pindex == ext_idx_beg || *pindex != *(pindex - 1)) {
+/*
+///    if (pindex == ext_idx_beg || *pindex != *(pindex - 1)) {
       do {
         info.data[offset] += *pvalue;
-        pindex++;
-        pvalue++;
+        pindex += sortedStride;
+        pvalue += sortedStride;
 
-        printf("...%lld %lld %lld %g\n", n , no, *pindex, offset, info.data[offset]);
+        printf("...%lld %lld %lld %lld %lld %g\n", n , no, *pindex, offset, linear_index, info.data[offset]);
       } while (pindex != ext_idx_end && *pindex == linear_index);
-    }
+///    }
+ */
     return 0;  // discarded
   }
 
@@ -320,6 +309,7 @@ struct TensorAccumMixedPutOp : thrust::unary_function<int64_t, T> {
   const int64_t* orig_idx_beg;
   const int64_t sortedStride;
   const int64_t sortedSize;
+  const bool before;
 };
 
 template <typename T>
@@ -369,7 +359,7 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
   std::tie(self, linearIndex, beforeIndex, afterIndex,
       emptyBefore, emptyAfter, nElemBefore, nElemAfter) = makeLinearIndex(self_, indices);
 
-  auto sortedLinearIndex = linearIndex;
+  auto sortedLinearIndex = linearIndex.clone();
   auto origCounters = at::empty_like(linearIndex);
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -396,18 +386,6 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
         sortedLinearIndex_iter, sortedLinearIndex_iter + idxSize,
         origCounters_iter, ThrustLTOp<int64_t>());
 
-    std::cout << "origCounters" << std::endl;
-    print(origCounters, 120);
-    std::cout << std::endl << "strides: "
-              << computeLinearStride(origCounters) << std::endl << std::endl;
-    std::cout << "value" << std::endl;
-    print(value, 120);
-    std::cout << std::endl << "strides: "
-              << computeLinearStride(value) << std::endl << std::endl;
-    std::cout << "sortedLinearIndex" << std::endl;
-    print(sortedLinearIndex, 120);
-    std::cout << std::endl << "strides: "
-              << computeLinearStride(sortedLinearIndex) << std::endl << std::endl;
 
     if (!beforeIndex.defined() && !afterIndex.defined()) {
       // Full size index, done:
@@ -418,58 +396,45 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
   });
 
   if (beforeIndex.defined() || afterIndex.defined()) {
-    Tensor extendedLinearIndex;
+    // trying to reuse device memory
+    Tensor extendedLinearIndex = sortedLinearIndex;
     // Sum with broadcasting to compute the full index
+    // using unsorted original
     linearIndex = unsqueezeN(linearIndex, emptyBefore, emptyAfter);
-    if (emptyBefore > 0) {
-      beforeIndex = unsqueezeN(beforeIndex, 0, linearIndex.dim() + emptyAfter);
 
-      std::cout << "beforeIndex" << std::endl;
-      print(beforeIndex, 120);
-      std::cout << std::endl << "strides: "
-                << computeLinearStride(beforeIndex) << std::endl << std::endl;
+    for (int side = 0; side < 2; ++side) {
+      if (side == 0 && emptyBefore > 0) {
+        beforeIndex = unsqueezeN(beforeIndex, 0, linearIndex.dim());// + emptyAfter);
 
-      extendedLinearIndex = linearIndex + beforeIndex;
+        extendedLinearIndex = linearIndex + beforeIndex;
+      } else if (side == 1 && emptyAfter > 0) {
+        afterIndex = unsqueezeN(afterIndex, linearIndex.dim()/* + emptyBefore*/, 0);
+
+
+        extendedLinearIndex = linearIndex + afterIndex;
+      } else {
+        continue;
+      }
+
+      extendedLinearIndex.squeeze_();
+
+      AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_2", [&] {
+        const scalar_t* pvalue = value.data<scalar_t>();
+        const int64_t extendedIdxSize = extendedLinearIndex.numel();
+        int64_t* extendedLinearIndex_beg = extendedLinearIndex.data<int64_t>();
+        int64_t* extendedLinearIndex_end = extendedLinearIndex_beg + extendedIdxSize;
+        int64_t* origCounters_beg = origCounters.data<int64_t>();
+        auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
+        TensorAccumMixedPutOp<scalar_t> amPutOp(self_info, pvalue, extendedLinearIndex_beg,
+            extendedLinearIndex_end, origCounters_beg, extendedIdxSize / idxSize, idxSize,
+            side == 0);  // <-- before
+
+        thrust::counting_iterator <int64_t> first(0);
+        thrust::counting_iterator <int64_t> last(extendedIdxSize);
+        thrust::for_each(policy, first, last, amPutOp);
+
+      });
     }
-    if (emptyAfter > 0) {
-      assert(false);
-      afterIndex = unsqueezeN(afterIndex, linearIndex.dim() + emptyBefore, 0);
-
-      std::cout << "afterIndex" << std::endl;
-      print(afterIndex, 120);
-      std::cout << std::endl << "strides: "
-                << computeLinearStride(afterIndex) << std::endl << std::endl;
-
-      linearIndex = linearIndex + afterIndex;
-
-    }
-    extendedLinearIndex.squeeze_();
-
-    std::cout << "extendedLinearIndex" << std::endl;
-    print(extendedLinearIndex, 120);
-    std::cout << std::endl << "strides: "
-              << computeLinearStride(extendedLinearIndex) << std::endl << std::endl;
-
-    AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_2", [&] {
-      const scalar_t *pvalue = value.data<scalar_t>();
-      const int64_t extendedIdxSize = extendedLinearIndex.numel();
-      int64_t* extendedLinearIndex_beg = extendedLinearIndex.data<int64_t>();
-      int64_t* extendedLinearIndex_end = extendedLinearIndex_beg + extendedIdxSize;
-      int64_t* origCounters_beg = origCounters.data<int64_t>();
-      auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
-      TensorAccumMixedPutOp<scalar_t> amPutOp(self_info,
-        pvalue, extendedLinearIndex_beg, extendedLinearIndex_end,
-        origCounters_beg, extendedIdxSize / idxSize, idxSize);
-
-//      auto first = thrust::make_zip_iterator(
-//          thrust::make_tuple(plindex, pvalue));
-//      auto last = thrust::make_zip_iterator(
-//          thrust::make_tuple(plindex + extendedIdxSize, pvalue + extendedIdxSize));
-      thrust::counting_iterator<int64_t> first(0);
-      thrust::counting_iterator<int64_t> last(extendedIdxSize);
-      thrust::for_each(policy, first, last, amPutOp);
-
-    });
   }
   return self_;
 }
@@ -478,6 +443,67 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
 
 
 
+
+
+
+
+
+
+
+//        std::cout << "beforeIndex" << std::endl;
+//        print(beforeIndex, 120);
+//        std::cout << std::endl << "strides: " << computeLinearStride(beforeIndex) << std::endl
+//                  << std::endl;
+
+//        std::cout << "afterIndex" << std::endl;
+//        print(afterIndex, 120);
+//        std::cout << std::endl << "strides: " << computeLinearStride(afterIndex) << std::endl
+//                  << std::endl;
+//      std::cout << "1 extendedLinearIndex" << std::endl;
+//      print(extendedLinearIndex, 120);
+//      std::cout << std::endl << "strides: " << computeLinearStride(extendedLinearIndex) << std::endl
+//                << std::endl;
+//      std::cout << "2 extendedLinearIndex" << std::endl;
+//      print(extendedLinearIndex, 120);
+//      std::cout << std::endl << "strides: " << computeLinearStride(extendedLinearIndex) << std::endl
+//                << std::endl;
+
+
+//  std::cout << "0 sortedLinearIndex" << std::endl;
+//  print(sortedLinearIndex, 120);
+//  std::cout << std::endl << "strides: "
+//            << computeLinearStride(sortedLinearIndex) << std::endl << std::endl;
+
+
+//    std::cout << "origCounters" << std::endl;
+//    print(origCounters, 120);
+//    std::cout << std::endl << "strides: "
+//              << computeLinearStride(origCounters) << std::endl << std::endl;
+//    std::cout << "value" << std::endl;
+//    print(value, 120);
+//    std::cout << std::endl << "strides: "
+//              << computeLinearStride(value) << std::endl << std::endl;
+//    std::cout << "1 sortedLinearIndex" << std::endl;
+//    print(sortedLinearIndex, 120);
+//    std::cout << std::endl << "strides: "
+//              << computeLinearStride(sortedLinearIndex) << std::endl << std::endl;
+//      std::cout << "linearIndex" << std::endl;
+//      print(linearIndex, 120);
+//      std::cout << std::endl << "strides: " << computeLinearStride(linearIndex) << std::endl
+//                << std::endl;
+
+//printf("%lld %lld %lld \n",n , sortedStride, sortedSize);
+//
+//printf("                                                                "
+//"%lld %lld %lld %lld %lld %lld\n",n , sortedno, unsorted, orig_idx_beg[sortedno % sortedSize],
+//sortedno * sortedStride, no);
+//printf("%lld %lld %lld %lld %g\n", n, no, linear_index, offset, *pvalue);
+
+
+//      auto first = thrust::make_zip_iterator(
+//          thrust::make_tuple(plindex, pvalue));
+//      auto last = thrust::make_zip_iterator(
+//          thrust::make_tuple(plindex + extendedIdxSize, pvalue + extendedIdxSize));
 
 //  printf("%lld %lld %lld %lld %g\n", n , no, linear_index,
 //  offset, *pvalue);
