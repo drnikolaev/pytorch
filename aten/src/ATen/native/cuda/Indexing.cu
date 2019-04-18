@@ -86,10 +86,11 @@
 #include "../../../../../c10/core/DeviceType.h"
 
 #ifdef __HIP_PLATFORM_HCC__
-const int WARP_SIZE = 64;
+#define WARP_SIZE 64
 #else
-const int WARP_SIZE = 32;
+#define WARP_SIZE 32
 #endif
+#define GRAIN_SIZE 32
 
 namespace at { namespace native {
 
@@ -275,85 +276,132 @@ __device__ __forceinline__ IndexType indexToOffset(
 template <typename scalar_t>
 __global__ void backward_indexing_kernel(
     int64_t* extendedIdx, int64_t* origOrder, scalar_t* gradValues,
-    scalar_t* dst,
+    cuda::detail::TensorInfo<scalar_t, int64_t>* dtsInfo,
+    int64_t extendedIdxSize,
     int64_t dstSize, int64_t sortedStride, int sortedSize) {
 
   using accscalar_t = acc_type<scalar_t, true>;
-//  int idx = blockIdx.x * 4 + threadIdx.y;
-//  printf("%d : %d = %d * 4 + %d\n", threadIdx.x, idx, blockIdx.x, threadIdx.y);
 
-  
+  int64_t n = threadIdx.x + blockIdx.x * blockDim.x;
+  int idx = blockIdx.x * GRAIN_SIZE + threadIdx.y;
 
+  //  printf("%d : %d = %d * 4 + %d\n", threadIdx.x, idx, blockIdx.x, threadIdx.y);
+const int start_feature = threadIdx.x + blockIdx.y * blockDim.x * GRAIN_SIZE;
+printf("%d %d : %d %d %d\n", idx, start_feature, threadIdx.x, blockIdx.y, blockDim.x );
+
+
+if (idx < extendedIdxSize
+  && (idx == 0 || extendedIdx[idx] != extendedIdx[idx - 1])) {
+
+do {
+  n = idx;
+  const int64_t sortedno = n / sortedStride;
+  const int64_t unsorted = origOrder[sortedno % sortedSize];
+  const int64_t no = unsorted * sortedStride + (n % sortedStride);
+  const scalar_t* pvalue = gradValues + no;
+  const int64_t* pindex = extendedIdx + no;
+
+//  accscalar_t values[WARP_SIZE];
+//  int64_t offsets[WARP_SIZE];
+
+//  #pragma unroll
+//  for (int t = 0; t < WARP_SIZE; ++t) {
+
+const int64_t linear_index = *pindex;
+const int64_t offset = indexToOffset<scalar_t, int64_t>(*dtsInfo, linear_index);
+assert(offset < dstSize);
+
+printf("...%lld %lld %lld %lld %lld %g\n", n , no, *pindex,
+offset, linear_index, dtsInfo->data[offset]);
+
+dtsInfo->data[offset] += *pvalue;
+pindex += sortedStride;
+pvalue += sortedStride;
+
+
+//  }
+
+
+
+//  printf("**** %lld %lld %lld %g  --  %lld %lld %lld %lld +++ %lld\n", n , no, *pindex, *pvalue,
+//    sortedStride, sortedSize, extendedIdxSize, dstSize, start_feature);
+
+    if (pindex - (std::ptrdiff_t) extendedIdxSize >= 0) break;
+
+     ++idx;
+    } while (true);// && *pindex == linear_index);
+ }
 
 
 }
 
+///printf("...%lld %lld %lld %lld %lld %g\n", n , no, *pindex, offset, linear_index, info.data[offset]);
 
 
 //dim3 grid(THCCeilDiv(num_indices, (int64_t) 4), THCCeilDiv(stride, (int64_t) 128));
 //dim3 block(32, 4);
 
-template <typename scalar_t>
-__global__ void embedding_backward_kernel(
-    int64_t* extendedIdx, scalar_t* gradValues, scalar_t* dst,
-    int64_t* origOrder, int64_t numel, int64_t sortedStride, int sortedSize) {
-
-  using accscalar_t = acc_type<scalar_t, true>;
-  int idx = blockIdx.x * 4 + threadIdx.y;
-
-  // Each warp is responsible for an input into the LookupTable.
-  // If the preceding input has the same as this input, then the warp
-  // exits immediately. The warp also processes subsequent inputs with the
-  // same value.
-  //
-  // Input Warp
-  // 1     <warp 1>
-  // 1     <warp 1> (<warp 2> exits without doing any work)
-  // 5     <warp 3>
-  // 8     <warp 4>
-
-  // Number of values proceessed by each thread (grain size)
-  const int SZ = 4;
-
-  if (idx < numel
-      && (idx == 0 || input[idx] != input[idx - 1])
-      && input[idx] != padding_idx) {
-    do {
-      const int start_feature = threadIdx.x + blockIdx.y * blockDim.x * SZ;
-      const int weight_row = ((int) input[idx]) * stride;
-      const int grad_row = ((int) indices[idx]) * stride;
-      const accscalar_t scale = count ? (accscalar_t)1.0 / count[idx] : 1.0;
-
-      accscalar_t gradient[SZ];
-      accscalar_t weight[SZ];
-
-#pragma unroll
-      for (int ii = 0; ii < SZ; ii++) {
-        int feature_dim = start_feature + ii * WARP_SIZE;
-        if (feature_dim < stride) {
-          gradient[ii] = static_cast<accscalar_t>(grad_output[grad_row + feature_dim]);
-          weight[ii] = static_cast<accscalar_t>(grad_weight[weight_row + feature_dim]);
-        }
-      }
-
-#pragma unroll
-      for (int ii = 0; ii < SZ; ii++) {
-        weight[ii] += gradient[ii] * scale;
-      }
-
-#pragma unroll
-      for (int ii = 0; ii < SZ; ii++) {
-        int feature_dim = start_feature + ii * WARP_SIZE;
-        if (feature_dim < stride) {
-          grad_weight[weight_row + feature_dim] = static_cast<scalar_t>(weight[ii]);
-        }
-      }
-
-      idx++;
-    } while (idx < numel && input[idx] == input[idx - 1]);
-  }
-}
-
+//template <typename scalar_t>
+//__global__ void embedding_backward_kernel(
+//    int64_t* extendedIdx, scalar_t* gradValues, scalar_t* dst,
+//    int64_t* origOrder, int64_t numel, int64_t sortedStride, int sortedSize) {
+//
+//  using accscalar_t = acc_type<scalar_t, true>;
+//  int idx = blockIdx.x * 4 + threadIdx.y;
+//
+//  // Each warp is responsible for an input into the LookupTable.
+//  // If the preceding input has the same as this input, then the warp
+//  // exits immediately. The warp also processes subsequent inputs with the
+//  // same value.
+//  //
+//  // Input Warp
+//  // 1     <warp 1>
+//  // 1     <warp 1> (<warp 2> exits without doing any work)
+//  // 5     <warp 3>
+//  // 8     <warp 4>
+//
+//  // Number of values proceessed by each thread (grain size)
+//  const int SZ = 4;
+//
+//  if (idx < numel
+//      && (idx == 0 || input[idx] != input[idx - 1])
+//      && input[idx] != padding_idx) {
+//    do {
+//      const int start_feature = threadIdx.x + blockIdx.y * blockDim.x * SZ;
+//      const int weight_row = ((int) input[idx]) * stride;
+//      const int grad_row = ((int) indices[idx]) * stride;
+//      const accscalar_t scale = count ? (accscalar_t)1.0 / count[idx] : 1.0;
+//
+//      accscalar_t gradient[SZ];
+//      accscalar_t weight[SZ];
+//
+//#pragma unroll
+//      for (int ii = 0; ii < SZ; ii++) {
+//        int feature_dim = start_feature + ii * WARP_SIZE;
+//        if (feature_dim < stride) {
+//          gradient[ii] = static_cast<accscalar_t>(grad_output[grad_row + feature_dim]);
+//          weight[ii] = static_cast<accscalar_t>(grad_weight[weight_row + feature_dim]);
+//        }
+//      }
+//
+//#pragma unroll
+//      for (int ii = 0; ii < SZ; ii++) {
+//        weight[ii] += gradient[ii] * scale;
+//      }
+//
+//#pragma unroll
+//      for (int ii = 0; ii < SZ; ii++) {
+//        int feature_dim = start_feature + ii * WARP_SIZE;
+//        if (feature_dim < stride) {
+//          grad_weight[weight_row + feature_dim] = static_cast<scalar_t>(weight[ii]);
+//        }
+//      }
+//
+//      idx++;
+//    } while (idx < numel && input[idx] == input[idx - 1]);
+//  }
+//}
+//
 
 //struct cudaLaunchParams {
 //  void *func;
@@ -502,7 +550,7 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self_.dim(), " (got ", indices.size(), ")");
   }
 
-  Tensor self, linearIndex, expandedValue;
+  Tensor self, linearIndex;//, expandedValue;
   Tensor beforeIndex, afterIndex;
   int64_t emptyBefore = 0L, emptyAfter = 0L;
   int64_t nElemBefore = 1L, nElemAfter = 1L;
@@ -559,34 +607,57 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
       if (side == 0 && emptyBefore > 0) {
         beforeIndex = unsqueezeN(beforeIndex, 0, linearIndex.dim());// + emptyAfter);
         extendedLinearIndex = linearIndex + beforeIndex;
+
+        std::cout << "beforeIndex" << std::endl;
+        print(beforeIndex, 120);
+        std::cout << std::endl << "strides: "
+                  << computeLinearStride(beforeIndex) << std::endl << std::endl;
+
       } else if (side == 1 && emptyAfter > 0) {
         afterIndex = unsqueezeN(afterIndex, linearIndex.dim()/* + emptyBefore*/, 0);
         extendedLinearIndex = linearIndex + afterIndex;
+
+        std::cout << "afterIndex" << std::endl;
+        print(afterIndex, 120);
+        std::cout << std::endl << "strides: "
+                  << computeLinearStride(afterIndex) << std::endl << std::endl;
+
       } else {
         continue;
       }
       extendedLinearIndex.squeeze_();
 
+      std::cout << "extendedLinearIndex" << std::endl;
+      print(extendedLinearIndex, 120);
+      std::cout << std::endl << "strides: "
+                << computeLinearStride(extendedLinearIndex) << std::endl << std::endl;
+
+
       AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_kernel_", [&] {
-        auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
+        cuda::detail::TensorInfo<scalar_t, int64_t> self_info =
+            cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
         scalar_t* valuePtr = value.data<scalar_t>();
         int64_t extendedIdxSize = extendedLinearIndex.numel();
         int64_t* origCountersPtr = origCounters.data<int64_t>();
         int64_t* extendedLinearIndexPtr = extendedLinearIndex.data<int64_t>();
         int64_t sortedStride = extendedIdxSize / idxSize;
 
-        dim3 grid(THCCeilDiv(extendedIdxSize, 4L), THCCeilDiv(sortedStride, 128L));
-        dim3 block(WARP_SIZE, 4);
+        dim3 grid(THCCeilDiv(extendedIdxSize, (int64_t) GRAIN_SIZE), THCCeilDiv(sortedStride, 128L));
+        dim3 block(WARP_SIZE, GRAIN_SIZE);
+//        dim3 grid(THCCeilDiv(extendedIdxSize, 1L), THCCeilDiv(sortedStride, 1L));
+//        dim3 block(WARP_SIZE, WARP_SIZE);
 
         void *args[] = {
             &extendedLinearIndexPtr,
             &origCountersPtr,
-            &valuePtr, &self_info.data,
+            &valuePtr, &self_info, &extendedIdxSize,
             &dstSize, &extendedIdxSize, &sortedStride};
 
-        cudaLaunchKernel( //<decltype(backward_indexing_kernel<scalar_t>)>(
+        THCudaCheck(cudaLaunchKernel( //<decltype(backward_indexing_kernel<scalar_t>)>(
             (const void*)&backward_indexing_kernel<scalar_t>, grid, block,
-            args, 0, stream);
+            args, 0, stream));
+        THCudaCheck(cudaStreamSynchronize(stream));
+        THCudaCheck(cudaGetLastError());
 
       });
 /*
