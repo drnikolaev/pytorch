@@ -69,6 +69,8 @@
 #include <THC/THCTensorSort.cuh>
 #include <THC/THCThrustAllocator.cuh>
 
+#include <vector_types.h>
+
 #include <thrust/functional.h>
 #include <thrust/execution_policy.h>
 #include <thrust/unique.h>
@@ -82,6 +84,12 @@
 
 #include <ATen/cpu/vec256/vec256.h>
 #include "../../../../../c10/core/DeviceType.h"
+
+#ifdef __HIP_PLATFORM_HCC__
+const int WARP_SIZE = 64;
+#else
+const int WARP_SIZE = 32;
+#endif
 
 namespace at { namespace native {
 
@@ -263,6 +271,147 @@ __device__ __forceinline__ IndexType indexToOffset(
   return offset + linearIndex * info.strides[0];
 }
 
+
+template <typename scalar_t>
+__global__ void backward_indexing_kernel(
+    int64_t* extendedIdx, int64_t* origOrder, scalar_t* gradValues,
+    scalar_t* dst,
+    int64_t dstSize, int64_t sortedStride, int sortedSize) {
+
+  using accscalar_t = acc_type<scalar_t, true>;
+//  int idx = blockIdx.x * 4 + threadIdx.y;
+//  printf("%d : %d = %d * 4 + %d\n", threadIdx.x, idx, blockIdx.x, threadIdx.y);
+
+  
+
+
+
+}
+
+
+
+//dim3 grid(THCCeilDiv(num_indices, (int64_t) 4), THCCeilDiv(stride, (int64_t) 128));
+//dim3 block(32, 4);
+
+template <typename scalar_t>
+__global__ void embedding_backward_kernel(
+    int64_t* extendedIdx, scalar_t* gradValues, scalar_t* dst,
+    int64_t* origOrder, int64_t numel, int64_t sortedStride, int sortedSize) {
+
+  using accscalar_t = acc_type<scalar_t, true>;
+  int idx = blockIdx.x * 4 + threadIdx.y;
+
+  // Each warp is responsible for an input into the LookupTable.
+  // If the preceding input has the same as this input, then the warp
+  // exits immediately. The warp also processes subsequent inputs with the
+  // same value.
+  //
+  // Input Warp
+  // 1     <warp 1>
+  // 1     <warp 1> (<warp 2> exits without doing any work)
+  // 5     <warp 3>
+  // 8     <warp 4>
+
+  // Number of values proceessed by each thread (grain size)
+  const int SZ = 4;
+
+  if (idx < numel
+      && (idx == 0 || input[idx] != input[idx - 1])
+      && input[idx] != padding_idx) {
+    do {
+      const int start_feature = threadIdx.x + blockIdx.y * blockDim.x * SZ;
+      const int weight_row = ((int) input[idx]) * stride;
+      const int grad_row = ((int) indices[idx]) * stride;
+      const accscalar_t scale = count ? (accscalar_t)1.0 / count[idx] : 1.0;
+
+      accscalar_t gradient[SZ];
+      accscalar_t weight[SZ];
+
+#pragma unroll
+      for (int ii = 0; ii < SZ; ii++) {
+        int feature_dim = start_feature + ii * WARP_SIZE;
+        if (feature_dim < stride) {
+          gradient[ii] = static_cast<accscalar_t>(grad_output[grad_row + feature_dim]);
+          weight[ii] = static_cast<accscalar_t>(grad_weight[weight_row + feature_dim]);
+        }
+      }
+
+#pragma unroll
+      for (int ii = 0; ii < SZ; ii++) {
+        weight[ii] += gradient[ii] * scale;
+      }
+
+#pragma unroll
+      for (int ii = 0; ii < SZ; ii++) {
+        int feature_dim = start_feature + ii * WARP_SIZE;
+        if (feature_dim < stride) {
+          grad_weight[weight_row + feature_dim] = static_cast<scalar_t>(weight[ii]);
+        }
+      }
+
+      idx++;
+    } while (idx < numel && input[idx] == input[idx - 1]);
+  }
+}
+
+
+//struct cudaLaunchParams {
+//  void *func;
+//  dim3 gridDim;
+//  dim3 blockDim;
+//  void **args;
+//  size_t sharedMem;
+//  cudaStream_t stream;
+//};
+
+//struct cudaLaunchParams* params = paramsList+i;
+//CUDACHECK(cudaSetDevice(cudaDevs[i]));
+//CUDACHECK(cudaLaunchKernel(params->func, params->gridDim, params->blockDim, params->args, params->sharedMem, params->stream));
+
+//kernel<type> <<<grid, block,shared,stream>>>(arg);
+//cudaLaunchKernel(kernel<type>, grid.x, grid.y, grid.z, block.x, block.y, block.z, arg, shared, stream);
+
+/*
+dim3 grid(THCCeilDiv(num_indices, (int64_t) 4), THCCeilDiv(stride, (int64_t) 128));
+dim3 block(32, 4);
+
+AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad.scalar_type(), "embedding_backward", [&] {
+embedding_backward_kernel<<<grid, block, 0, stream>>>(
+sorted_indices.data<int64_t>(),
+    orig_indices.data<int64_t>(),
+    grad.data<scalar_t>(),
+    grad_weight.data<scalar_t>(),
+    count.defined() ? count.data<int64_t>() : nullptr,
+num_indices,
+stride,
+padding_idx);
+});
+THCudaCheck(cudaGetLastError());
+*/
+
+//unsigned int tid = threadIdx.x + threadIdx.y * blockDim.x;
+//unsigned int warpid = tid / warpSize;
+
+template <class F, class... Args>
+void for_each_argument(F f, Args&&... args) { [](...){}((f(std::forward<Args>(args)), 0)...); }
+
+//
+//template <typename... Params>
+//void bar(Params... params)
+//{
+//  /* etc etc */
+//  void* arguments_ptrs[sizeof...(Params)];
+//  auto arg_index = 0;
+//
+//  for_each_argument(
+//      [&](auto param) {arguments_ptrs[arg_index++] = &param;},
+//      params...);
+//
+//  cudaLaunchKernel<decltype(my_kernel)>(
+//      &my_kernel, grid_dims, block_dims, argument_ptrs, shmem_size, stream_id);
+//}
+
+
 template <typename T>
 struct TensorAccumMixedPutOp : thrust::unary_function<int64_t, T> {
   TensorAccumMixedPutOp(at::cuda::detail::TensorInfo<T, int64_t> info,
@@ -368,7 +517,8 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
   auto allocator = THCThrustAllocator(globalContext().lazyInitCUDA());
   auto policy = thrust::cuda::par(allocator).on(stream);
 
-  const int64_t idxSize = linearIndex.numel();
+  int64_t idxSize = linearIndex.numel(); // const breaks usin cudaKernelLaunch
+  int64_t dstSize = self.numel();
   AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "xput_cuda_1", [&] {
     int64_t* sortedLinearIndex_beg = sortedLinearIndex.data<int64_t>();
     int64_t* sortedLinearIndex_end = sortedLinearIndex_beg + idxSize;
@@ -417,6 +567,30 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
       }
       extendedLinearIndex.squeeze_();
 
+      AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_kernel_", [&] {
+        auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
+        scalar_t* valuePtr = value.data<scalar_t>();
+        int64_t extendedIdxSize = extendedLinearIndex.numel();
+        int64_t* origCountersPtr = origCounters.data<int64_t>();
+        int64_t* extendedLinearIndexPtr = extendedLinearIndex.data<int64_t>();
+        int64_t sortedStride = extendedIdxSize / idxSize;
+
+        dim3 grid(THCCeilDiv(extendedIdxSize, 4L), THCCeilDiv(sortedStride, 128L));
+        dim3 block(WARP_SIZE, 4);
+
+        void *args[] = {
+            &extendedLinearIndexPtr,
+            &origCountersPtr,
+            &valuePtr, &self_info.data,
+            &dstSize, &extendedIdxSize, &sortedStride};
+
+        cudaLaunchKernel( //<decltype(backward_indexing_kernel<scalar_t>)>(
+            (const void*)&backward_indexing_kernel<scalar_t>, grid, block,
+            args, 0, stream);
+
+      });
+/*
+
       AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_2", [&] {
         const scalar_t* pvalue = value.data<scalar_t>();
         const int64_t extendedIdxSize = extendedLinearIndex.numel();
@@ -433,6 +607,7 @@ Tensor & index_put_cuda_(Tensor & self_, TensorList indices, const Tensor & valu
         thrust::for_each(policy, first, last, amPutOp);
 
       });
+*/
     }
   }
   return self_;
