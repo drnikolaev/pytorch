@@ -451,7 +451,7 @@ Tensor index_put(const Tensor & self, TensorList indices, const Tensor & value, 
   return self.clone().index_put_(indices, value, accumulate);
 }
 
-Tensor & index_put_(Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
+Tensor& index_put_(Tensor & self, TensorList indices, const Tensor & value, bool accumulate) {
   if (indices.size() > (size_t)self.dim()) {
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self.dim(), " (got ", indices.size(), ")");
   }
