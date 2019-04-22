@@ -298,30 +298,20 @@ template<typename index_t>
 __device__ __forceinline__
 index_t extended_pos(index_t nseq, index_t sortedStride, index_t sortedSize,
     const int64_t* origOrder) {
-return nseq / sortedSize + origOrder[nseq % sortedSize] * sortedStride;
-  //return origOrder[nseq / sortedSize + (nseq % sortedSize) * sortedStride];
-
-  //const int n = idx * blockSize + currentThreadInBlock;
-//const int sortedno = n / sortedStride;
-//const int unsorted = origOrder[sortedno % sortedSize];
-//return unsorted * sortedStride + (n % sortedStride);
+  return nseq / sortedSize + origOrder[nseq % sortedSize] * sortedStride;
 }
 
 template<typename index_t>
 __device__ __forceinline__
-    index_t extended_pos(index_t idx, index_t blockSize, index_t currentThreadInBlock,
+index_t extended_pos(index_t idx, index_t blockSize, index_t currentThreadInBlock,
     index_t sortedStride, index_t sortedSize, const int64_t* origOrder) {
   const index_t nseq = idx * blockSize + currentThreadInBlock;
   return extended_pos(nseq, sortedStride, sortedSize, origOrder);
-//const int n = idx * blockSize + currentThreadInBlock;
-//const int sortedno = n / sortedStride;
-//const int unsorted = origOrder[sortedno % sortedSize];
-//return unsorted * sortedStride + (n % sortedStride);
 }
 
 template<typename scalar_t>
-__global__ void
-backward_indexing_kernel(const int64_t* extendedIdx, int64_t* origOrder, scalar_t* gradValues,
+__global__
+void backward_indexing_kernel(const int64_t* extendedIdx, int64_t* origOrder, scalar_t* gradValues,
     int64_t extendedIdxSize, int64_t sortedStride, int64_t sortedSize, scalar_t* dstData,
     int dstDims,
     int dstSize0, int dstStride0,
