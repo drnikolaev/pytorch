@@ -92,6 +92,7 @@
 #define WARP_SIZE 32
 #endif
 #define GRID_SIZE 128
+#define GROUP_SIZE 32
 
 namespace at {
 namespace native {
@@ -271,7 +272,7 @@ makeLinearIndex(Tensor self, TensorList orig) {
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     THCudaCheck(
         cudaLaunchKernel((const void*) &arange_kernel,
-            WARP_SIZE * 4, GRID_SIZE, args, 0, stream));
+            WARP_SIZE, GRID_SIZE, args, 0, stream));
     THCudaCheck(cudaStreamSynchronize(stream));
     index = index * strides[emptyBefore - 1];
     index = index.view(self.sizes().slice(0, emptyBefore));
@@ -286,7 +287,7 @@ makeLinearIndex(Tensor self, TensorList orig) {
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     THCudaCheck(
         cudaLaunchKernel((const void*) &arange_kernel,
-            WARP_SIZE * 4, GRID_SIZE, args, 0, stream));
+            WARP_SIZE, GRID_SIZE, args, 0, stream));
     THCudaCheck(cudaStreamSynchronize(stream));
     index = index.view(self.sizes().slice(self.dim() - emptyAfter, emptyAfter));
     afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
@@ -307,17 +308,17 @@ indexToOffset(const at::cuda::detail::TensorInfo<T, IndexType>& info, IndexType 
   return offset + linearIndex * info.strides[0];
 }
 
-template<typename IndexType>
-__device__ __forceinline__
-IndexType indexToOffset(IndexType dims, IndexType* sizes, IndexType* strides,
-    IndexType linearIndex) {
-  IndexType offset(0);
-  for (IndexType i = dims - 1; i > 0; --i) {
-    offset += (linearIndex % sizes[i]) * strides[i];
-    linearIndex /= sizes[i];
-  }
-  return offset + linearIndex* strides[0];
-}
+//template<typename IndexType>
+//__device__ __forceinline__
+//IndexType indexToOffset(IndexType dims, IndexType* sizes, IndexType* strides,
+//    IndexType linearIndex) {
+//  IndexType offset(0);
+//  for (IndexType i = dims - 1; i > 0; --i) {
+//    offset += (linearIndex % sizes[i]) * strides[i];
+//    linearIndex /= sizes[i];
+//  }
+//  return offset + linearIndex* strides[0];
+//}
 
 template<typename index_t>
 __device__ __forceinline__
@@ -336,49 +337,122 @@ index_t extended_pos(index_t idx, index_t blockSize, index_t currentThreadInBloc
 
 template<typename scalar_t>
 __global__
-void backward_indexing_kernel(const int64_t* extendedIdx, int64_t* origOrder, scalar_t* gradValues,
-    int64_t extendedIdxSize, int64_t baStride, int64_t sortedSize, scalar_t* dstData) {
+void backward_indexing_kernel(const int64_t* extendedIdx,
+    int64_t* origOrder, scalar_t* gradValues, int64_t extendedIdxSize,
+    int64_t baStride, int64_t sortedSize, scalar_t* dstData) {
   using accscalar_t = acc_type<scalar_t, true>;
 
-  __shared__ int offsetArr[WARP_SIZE];
-  __shared__ accscalar_t valArr[WARP_SIZE];
-
-  int blockSize = WARP_SIZE;// blockDim.x * blockDim.y * blockDim.z;
+  int blockSize = blockDim.x * blockDim.y * blockDim.z;
   int idxMax = (extendedIdxSize + blockSize - 1) / blockSize;
   int idx = blockIdx.x;
-  if (idx >= idxMax || threadIdx.x >= WARP_SIZE) {
-    return;
-  }
-  int blockHeadPos = extended_pos<int64_t>(idx, blockSize, 0L, baStride, sortedSize, origOrder);
+
+  int blockHeadPos = extended_pos<int64_t>(idx, blockSize, 0L,
+      baStride, sortedSize, origOrder);
+
+//  printf("BBBBBBBB blockHeadPos %d \n", blockHeadPos); // TODO!!!
+
   for (int i = blockIdx.x * blockDim.x + threadIdx.x;
-       i < extendedIdxSize; i += blockDim.x * gridDim.x) {
-    int th = i % WARP_SIZE;
+       i < extendedIdxSize;
+       i += blockDim.x * gridDim.x) {
+
     if (blockHeadPos < extendedIdxSize &&
-          (idx == 0 || blockHeadPos != extended_pos<int64_t>(idx - 1, blockSize, 0L,
-          baStride, sortedSize, origOrder))) {
-      const int no = extended_pos<int>(idx * WARP_SIZE + th, baStride, sortedSize, origOrder);
+        (idx == 0 || blockHeadPos != extended_pos<int64_t>(idx - 1, blockSize, 0L,
+                                                           baStride, sortedSize, origOrder))) {
+      int th = i % GROUP_SIZE;
+      const int no = extended_pos<int>(
+          idx, blockSize, th, baStride, sortedSize, origOrder);
+
+      //       printf("****** %d %d %d %d\n", idx, i, th, no); // TODO!!!
+
+      __shared__ int offsetArr[GROUP_SIZE];
+      __shared__ accscalar_t valArr[GROUP_SIZE];
+
       offsetArr[th] = extendedIdx[no];
       valArr[th] = gradValues[no];
       __syncthreads();
-      if (th == 0) {
-        int currentBlockEnd = extendedIdxSize - idx * WARP_SIZE;
-        currentBlockEnd = currentBlockEnd < WARP_SIZE ? currentBlockEnd : WARP_SIZE;
+      if (th == 0 && idx < idxMax) {
+        int currentBlockEnd = extendedIdxSize - idx * GROUP_SIZE;
+        currentBlockEnd =
+            currentBlockEnd < GROUP_SIZE ? currentBlockEnd : GROUP_SIZE;
+
+        //     printf("                %d %d %d %d\n", idx, i, th, currentBlockEnd); // TODO!!!
+
         for (int t = 0; t < currentBlockEnd; ++t) {
-//             printf("****** %d %d %d\n", i, th, t); // TODO!!!
           dstData[offsetArr[t]] += valArr[t];
+
+          //        printf("%d %d %d\n", idx, t, offsetArr[t]);
         }
+        __threadfence();
       }
       ++idx;
-      const int blockHeadPosNext = extended_pos<int64_t>(idx, blockSize, 0L, baStride,
-          sortedSize, origOrder);
+      const int blockHeadPosNext = extended_pos<int64_t>(
+          idx, blockSize, 0L, baStride, sortedSize, origOrder);
+      if (blockHeadPosNext >= extendedIdxSize ||
+          blockHeadPosNext != blockHeadPos) {
+        // next block is processing other images' indexes, exit.
+        break;
+      }
+      blockHeadPos = blockHeadPosNext; // keep going in the same warp
+    }
+  }
+//  __threadfence_block();
+}
+
+
+/*
+
+  //int idx = blockIdx.x * GROUP_SIZE + threadIdx.y;
+  int blockSize = blockDim.x * blockDim.y * blockDim.z;
+
+//  if (idx % GROUP_SIZE > 0) return;
+
+  int blockHeadPos = (int) extended_pos<int64_t>(idx, baStride, sortedSize, origOrder);
+
+
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x;
+       i < extendedIdxSize; i += blockDim.x * gridDim.x) {
+    int th = i % WARP_SIZE;
+
+
+
+  if (i < extendedIdxSize && (i == 0 || blockHeadPos !=
+      extended_pos<int64_t>(i - 1, baStride, sortedSize, origOrder))) {
+
+
+    do {
+//      const int ft = threadIdx.x + blockIdx.y * blockDim.x * GROUP_SIZE;
+
+
+//      int offsetArr[GROUP_SIZE];
+//      accscalar_t valArr[GROUP_SIZE];
+
+      #pragma unroll
+      for (int g = 0; g < GROUP_SIZE; g++) {
+
+//        int feature_dim = ft + i * WARP_SIZE;
+//        const int th = i + i;
+
+        printf("****** %d %d %d   %d %d \n", idx, i, th,
+               ft, feature_dim); // TODO!!!
+
+        const int no = extended_pos<int>(i + g, baStride, sortedSize, origOrder);
+//        offsetArr[i] = extendedIdx[no];
+//        valArr[i] = gradValues[no];
+
+        dstData[extendedIdx[no]] += gradValues[no];
+
+      }
+      idx++;
+      const int blockHeadPosNext =
+          extended_pos<int64_t>(idx, baStride, sortedSize, origOrder);
       if (blockHeadPosNext >= extendedIdxSize || blockHeadPosNext != blockHeadPos) {
         // next block is processing other images' indexes, exit.
         break;
       }
       blockHeadPos = blockHeadPosNext;  // keep going in the same warp
-    }
+    } while (true);
   }
-}
+*/
 
 template<typename T>
 struct TensorAccumFullyIndexedPutOp : thrust::unary_function<int64_t, T> {
@@ -469,6 +543,18 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
       linearIndex = linearIndex + afterIndex;
     }
 
+//    linearIndex = linearIndex.flatten();
+//
+//
+//    std::cout << "linearIndex += before" << std::endl;
+//print(linearIndex, 120);
+//std::cout << linearIndex.sizes() << std::endl
+//<< "strides: " << computeLinearStride(linearIndex)
+//<< std::endl
+//<< std::endl;
+
+
+
     AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_kernel_", [&] {
       cuda::detail::TensorInfo <scalar_t, int64_t> self_info =
           cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
@@ -478,8 +564,15 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
       int64_t* extendedLinearIndexPtr = linearIndex.data<int64_t>();
       int64_t baStride = nElemAfter * nElemBefore;
 
-      int blockSize = WARP_SIZE;
-      int gridSize = GRID_SIZE;// (extendedIdxSize + blockSize - 1) / blockSize;
+         //    printf("############# %lld \n", baStride); // TODO!!!
+
+//      int blockSize = WARP_SIZE;
+      dim3 blockSize(GROUP_SIZE); //, GROUP_SIZE);WARP_SIZE,
+      dim3 gridSize(GRID_SIZE); //(extendedIdxSize + GROUP_SIZE - 1) / GROUP_SIZE);
+//      dim3 gridSize((extendedIdxSize + GROUP_SIZE - 1) / GROUP_SIZE);
+  //        THCCeilDiv(num_indices, (int64_t) 4), THCCeilDiv(stride, (int64_t) 128));
+
+      //int gridSize = GRID_SIZE;// (extendedIdxSize + blockSize - 1) / blockSize;
       void* args[] = {&extendedLinearIndexPtr, &origCountersPtr, &valuePtr, &extendedIdxSize,
                       &baStride, &idxSize, &self_info.data};
       THCudaCheck(
