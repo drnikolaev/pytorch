@@ -91,8 +91,8 @@
 #else
 #define WARP_SIZE 32
 #endif
-#define GRID_SIZE 512
-#define GROUP_SIZE 8
+#define GRID_SIZE 128
+#define GROUP_SIZE 32
 
 namespace at {
 namespace native {
@@ -320,16 +320,25 @@ IndexType indexToOffset(IndexType dims, IndexType* sizes, IndexType* strides,
   return offset + linearIndex* strides[0];
 }
 
+// Adjusts linear index to reflect resort of the inner tensor
 template<typename IndexType>
 __device__ __forceinline__
-IndexType indexToOffset(IndexType dims, IndexType* sizes, IndexType* strides,
-    IndexType linearIndex, const IndexType* origOrder, int64_t sortedSize) {
-  IndexType offset(0);
-  linearIndex = origOrder[linearIndex % sortedSize]; // restore original order
+IndexType adjustIndex(IndexType dims,
+    IndexType* sizes, IndexType* strides,
+    IndexType linearIndex, const IndexType* origOrder,
+    IndexType emptyBefore, IndexType emptyAfter) {
+  IndexType offset(0), processed(0);
+  IndexType sortedSize = dims - emptyBefore - emptyAfter;
   for (IndexType i = dims - 1; i > 0; --i) {
-    offset += (linearIndex % sizes[i]) * strides[i];
+    IndexType orderedIndex = linearIndex;
+    if (i >= emptyBefore && dims - i < emptyAfter) {
+      // change order for sorted dimensions
+      orderedIndex =
+          origOrder[(linearIndex - processed) % sortedSize] + processed;
+    }
+    offset += (orderedIndex % sizes[i]) * strides[i];
     linearIndex /= sizes[i];
-
+    processed += sizes[i];
   }
   return offset + linearIndex * strides[0];
 }
@@ -337,24 +346,27 @@ IndexType indexToOffset(IndexType dims, IndexType* sizes, IndexType* strides,
 
 template<typename index_t>
 __device__ __forceinline__
-index_t extended_pos(index_t nseq, index_t baStride, index_t sortedSize,
-    const int64_t* origOrder) {
-  return nseq / sortedSize + origOrder[nseq % sortedSize] * baStride;
+index_t extended_idx(index_t nseq, index_t sortedSize,
+    index_t extendedSize, index_t extendedStride,
+    const int64_t* extendedIdx, const int64_t* origOrder) {
+  index_t aPart = nseq % sortedSize;
+  index_t aPartOrdered = origOrder[aPart];
+  return nseq + (aPartOrdered - aPart) * extendedStride;
 }
 
-template<typename index_t>
-__device__ __forceinline__
-index_t extended_pos(index_t idx, index_t blockSize, index_t currentThreadInBlock,
-    index_t baStride, index_t sortedSize, const int64_t* origOrder) {
-  const index_t nseq = idx * blockSize + currentThreadInBlock;
-  return extended_pos(nseq, baStride, sortedSize, origOrder);
-}
-
+//template<typename index_t>
+//__device__ __forceinline__
+//index_t extended_pos(index_t idx, index_t blockSize, index_t currentThreadInBlock,
+//    index_t baStride, index_t sortedSize, const int64_t* origOrder) {
+//  const index_t nseq = idx * blockSize + currentThreadInBlock;
+//  return extended_pos(nseq, baStride, sortedSize, origOrder);
+//}
+//
 template<typename scalar_t>
 __global__
 void backward_indexing_kernel(const int64_t* extendedIdx,
     int64_t* origOrder, scalar_t* gradValues,
-    int64_t extendedIdxSize, int64_t sortedSize,
+    int64_t extendedIdxSize, int64_t extendedStride, int64_t sortedSize,
     int sortedDims, int64_t* sortedSizes, int64_t* sortedStrides,
     scalar_t* dstData,
     int dstDims, int64_t* dstSizes, int64_t* dstStrides) {
@@ -368,146 +380,67 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
   __shared__ int offsetArr[GROUP_SIZE];
   __shared__ accscalar_t valArr[GROUP_SIZE];
 
-//
-//  int blockHeadPos = indexToOffset<int64_t>(sortedDims, sortedSizes, sortedStrides,
-//    idx * blockSize, origOrder, sortedSize);
+
+
+  int blockHeadPos = extended_idx<int>(idx * blockSize, sortedSize, extendedIdxSize,
+                                       extendedStride, extendedIdx, origOrder) ;
 
   for (int i = blockIdx.x * blockDim.x + threadIdx.x;
        i < extendedIdxSize;
        i += blockDim.x * gridDim.x) {
 
-//    if (blockHeadPos < extendedIdxSize &&
-//        (idx == 0 || blockHeadPos != indexToOffset<int64_t>(sortedDims, sortedSizes, sortedStrides,
-//            (idx - 1) * blockSize, origOrder, sortedSize))) {
+//    __syncwarp(GROUP_SIZE - 1);
+    __syncthreads();
 
-//      printf("############################# %d %d %d %d\n", i, extendedIdxSize, idx, blockHeadPos);
+    if (blockHeadPos < extendedIdxSize &&
+        (idx == 0 || blockHeadPos !=extended_idx<int>((idx- 1) * blockSize, sortedSize, extendedIdxSize,
+                                                      extendedStride, extendedIdx, origOrder))) {
 
 
+
+      const int extIdx = extended_idx<int>(i, sortedSize, extendedIdxSize,
+                                           extendedStride, extendedIdx, origOrder);
+      const int extPos = extendedIdx[extIdx];
+      const int offset = indexToOffset<int64_t>(dstDims, dstSizes, dstStrides, extPos);
       int th = i % GROUP_SIZE;
-      const int no = extended_pos<int>(i, sortedStrides[2], sortedSize, origOrder);
-//      const int no = indexToOffset<int64_t>(sortedDims, sortedSizes, sortedStrides,
-//          i, origOrder, sortedSize);
-
-      const int extIdx = extendedIdx[no];
-
-
-
-
-/*
-      const int entriesDone = idx * GROUP_SIZE;
-      //const int nseq = entriesDone + th;
-      const int no = extended_pos<int>(entriesDone + th, sortedStride, sortedSize, origOrder);
-      const int extIdx = extendedIdx[no];
-
-      //printf("---> %d %d %d %d %d\n", th, idx, extIdx, no, extendedIdxSize);
-
-
-      __shared__ int offsetArr[GROUP_SIZE];
-      __shared__ accscalar_t valArr[GROUP_SIZE];
-      //      if (extIdx < extendedIdxSize) {
-      //        const int linear_index = extendedIdx[no];
-      offsetArr[th] = indexToOffset(dstDims, dstSizes, dstStrides, extIdx);
-      valArr[th] = gradValues[no];
-*/
-
-
-
-
-
-
-
-      const int offset = indexToOffset<int64_t>(dstDims, dstSizes, dstStrides, extIdx);
-
-      printf("                       %d %d %d %d   %d %lld %lld %lld %lld %lld %lld\n",
-          i, no, extIdx, offset, dstDims, dstSizes[0], dstSizes[1], dstSizes[2],
-          dstStrides[0], dstStrides[1], dstStrides[2]);
-
-
       offsetArr[th] = offset;
-      valArr[th] = gradValues[no];
-      __syncwarp(GROUP_SIZE - 1);
+      valArr[th] = gradValues[extIdx];
+//      __syncwarp(GROUP_SIZE - 1);
+__syncthreads();
       if (th == 0 && idx < idxMax) {
         int currentBlockEnd = extendedIdxSize - idx * GROUP_SIZE;
         currentBlockEnd = currentBlockEnd < GROUP_SIZE ? currentBlockEnd : GROUP_SIZE;
         for (int t = 0; t < currentBlockEnd; ++t) {
-          __threadfence();
+//          __threadfence();
+//printf("  ");
           dstData[offsetArr[t]] += valArr[t];
+
+//          atomicAdd(dstData+offsetArr[t], valArr[t]);
         }
       }
       ++idx;
-//      const int blockHeadPosNext = extended_pos<int64_t>(
-//          idx, blockSize, 0L, baStride, sortedSize, origOrder);
+      int blockHeadPosNext = extended_idx<int>(idx * blockSize, sortedSize, extendedIdxSize,
+                                           extendedStride, extendedIdx, origOrder) ;
 
 
 //      const int blockHeadPosNext = indexToOffset<int64_t>(sortedDims, sortedSizes, sortedStrides,
 //          idx * blockSize, origOrder, sortedSize);
-//
-//
-//      if (blockHeadPosNext >= extendedIdxSize ||
-//          blockHeadPosNext != blockHeadPos) {
-//        // next block is processing other images' indexes, exit.
-//        break;
-//      }
-//      blockHeadPos = blockHeadPosNext; // keep going in the same warp
-//    }
-  }
-}
 
+//      int blockHeadPos = extended_idx<int>(idx * blockSize, sortedSize, extendedIdxSize,
+//                                           extendedStride, extendedIdx, origOrder) ;
 
-/*
-
-  //int idx = blockIdx.x * GROUP_SIZE + threadIdx.y;
-  int blockSize = blockDim.x * blockDim.y * blockDim.z;
-
-//  if (idx % GROUP_SIZE > 0) return;
-
-  int blockHeadPos = (int) extended_pos<int64_t>(idx, baStride, sortedSize, origOrder);
-
-
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x;
-       i < extendedIdxSize; i += blockDim.x * gridDim.x) {
-    int th = i % WARP_SIZE;
-
-
-
-  if (i < extendedIdxSize && (i == 0 || blockHeadPos !=
-      extended_pos<int64_t>(i - 1, baStride, sortedSize, origOrder))) {
-
-
-    do {
-//      const int ft = threadIdx.x + blockIdx.y * blockDim.x * GROUP_SIZE;
-
-
-//      int offsetArr[GROUP_SIZE];
-//      accscalar_t valArr[GROUP_SIZE];
-
-      #pragma unroll
-      for (int g = 0; g < GROUP_SIZE; g++) {
-
-//        int feature_dim = ft + i * WARP_SIZE;
-//        const int th = i + i;
-
-        printf("****** %d %d %d   %d %d \n", idx, i, th,
-               ft, feature_dim); // TODO!!!
-
-        const int no = extended_pos<int>(i + g, baStride, sortedSize, origOrder);
-//        offsetArr[i] = extendedIdx[no];
-//        valArr[i] = gradValues[no];
-
-        dstData[extendedIdx[no]] += gradValues[no];
-
-      }
-      idx++;
-      const int blockHeadPosNext =
-          extended_pos<int64_t>(idx, baStride, sortedSize, origOrder);
-      if (blockHeadPosNext >= extendedIdxSize || blockHeadPosNext != blockHeadPos) {
+      if (blockHeadPosNext >= extendedIdxSize ||
+          blockHeadPosNext != blockHeadPos) {
         // next block is processing other images' indexes, exit.
+        printf("---------------");
         break;
       }
-      blockHeadPos = blockHeadPosNext;  // keep going in the same warp
-    } while (true);
+      blockHeadPos = blockHeadPosNext; // keep going in the same warp
+
+      printf("&&&&&&&&&&&&&&&&&");
+    }
   }
-*/
+}
 
 template<typename T>
 struct TensorAccumFullyIndexedPutOp : thrust::unary_function<int64_t, T> {
@@ -586,7 +519,6 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
 //++cnt;
 //auto start = std::chrono::high_resolution_clock::now();
 
-
     void* args[] = {&idxSize, &origCounters_beg};
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     THCudaCheck(
@@ -595,14 +527,11 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
     THCudaCheck(cudaStreamSynchronize(stream));
 
 
-
-
 //    auto finish = std::chrono::high_resolution_clock::now();
 //    total += std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count();
 //    if (cnt % 100 == 0) {
 //      std::cout << "seq: " << total / cnt << "ns" << std::endl;
 //    }
-
 
     thrust::sort_by_key(policy, sortedLinearIndex_iter, sortedLinearIndex_iter + idxSize,
         origCounters_iter, ThrustLTOp<int64_t>());
@@ -615,70 +544,16 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
     }
   });
 
-  std::cout << "-->> linearIndex " << std::endl;
-  print(linearIndex, 120);
-  std::cout << linearIndex.sizes() << std::endl
-            << "strides: " << computeLinearStride(linearIndex)
-            << std::endl
-            << std::endl;
-
   if (beforeIndex.defined() || afterIndex.defined()) {
     // Sum with broadcasting to compute the full index
     // using unsorted original
     linearIndex = unsqueezeN(linearIndex, emptyBefore, emptyAfter);
     if (emptyBefore > 0) {
-      std::cout << "beforeIndex" << std::endl;
-      print(beforeIndex, 120);
-      std::cout << beforeIndex.sizes() << std::endl
-                << "strides: " << computeLinearStride(beforeIndex)
-                << std::endl
-                << std::endl;
-
       linearIndex = linearIndex + beforeIndex;
     }
     if (emptyAfter > 0) {
-      std::cout << "afterIndex" << std::endl;
-      print(afterIndex, 120);
-      std::cout << afterIndex.sizes() << std::endl
-                << "strides: " << computeLinearStride(afterIndex)
-                << std::endl
-                << std::endl;
-
       linearIndex = linearIndex + afterIndex;
     }
-
-
-
-    std::cout << "linearIndex " << std::endl;
-    print(linearIndex, 120);
-    std::cout << linearIndex.sizes() << std::endl
-    << "strides: " << computeLinearStride(linearIndex)
-    << std::endl
-    << std::endl;
-//
-//    linearIndex = linearIndex.flatten();
-//
-//
-//    std::cout << "linearIndex += flat" << std::endl;
-//print(linearIndex, 120);
-//std::cout << linearIndex.sizes() << std::endl
-//<< "strides: " << computeLinearStride(linearIndex)
-//<< std::endl
-//<< std::endl;
-
-        std::cout << "self" << std::endl;
-    print(self, 120);
-    std::cout << self.sizes() << std::endl
-    << "strides: " << computeLinearStride(self)
-    << std::endl
-    << std::endl;
-
-    std::cout << "value" << std::endl;
-    print(value, 120);
-    std::cout << value.sizes() << std::endl
-              << "strides: " << computeLinearStride(value)
-              << std::endl
-              << std::endl;
 
     AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_kernel_", [&] {
       cuda::detail::TensorInfo <scalar_t, int64_t> self_info =
@@ -689,9 +564,6 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
 
       int dstDims = self_info.dims;
       int sortedDims = sorted_info.dims;
-
- //     printf("############# %d \n", dstDims, self_info.sizes[0]); // TODO!!!
-
 
       Tensor dstSizes =
           CPU(kLong).tensorFromBlob(self_info.sizes, {dstDims}).cuda();
@@ -706,34 +578,15 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
       int64_t* sortedSizesPtr = sortedSizes.data<int64_t>();
       int64_t* sortedStridesPtr = sortedStrides.data<int64_t>();
 
-
-
-      std::cout << "sortedLinearIndex" << std::endl;
-      print(sortedLinearIndex, 120);
-      std::cout << sortedLinearIndex.sizes() << std::endl
-                << "strides: " << computeLinearStride(sortedLinearIndex)
-                << std::endl
-                << std::endl;
-
-
-
       scalar_t* valuePtr = value.data<scalar_t>();
       int64_t extendedIdxSize = linearIndex.numel();
       int64_t* origCountersPtr = origCounters.data<int64_t>();
       int64_t* extendedLinearIndexPtr = linearIndex.data<int64_t>();
-//      int64_t sortedStride = nElemAfter;// * nElemBefore;
 
-         //    printf("############# %lld \n", baStride); // TODO!!!
-
-//      int blockSize = WARP_SIZE;
-      dim3 blockSize(GROUP_SIZE); //, GROUP_SIZE);WARP_SIZE,
-      dim3 gridSize(GRID_SIZE);//(extendedIdxSize + GROUP_SIZE - 1) / GROUP_SIZE);
-//      dim3 gridSize((extendedIdxSize + GROUP_SIZE - 1) / GROUP_SIZE);
-  //        THCCeilDiv(num_indices, (int64_t) 4), THCCeilDiv(stride, (int64_t) 128));
-
-      //int gridSize = GRID_SIZE;// (extendedIdxSize + blockSize - 1) / blockSize;
+      dim3 blockSize(GROUP_SIZE);
+      dim3 gridSize(GRID_SIZE);
       void* args[] = {&extendedLinearIndexPtr, &origCountersPtr, &valuePtr,
-                      &extendedIdxSize, &idxSize,
+                      &extendedIdxSize, &nElemAfter, &idxSize,
                       &sortedDims, &sortedSizesPtr, &sortedStridesPtr,
                       &self_info.data,
                       &dstDims, &dstSizesPtr, &dstStridesPtr};
@@ -744,15 +597,6 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
       THCudaCheck(cudaGetLastError());
     });
   }
-
-  std::cout << "self_" << std::endl;
-  print(self_, 120);
-  std::cout << self_.sizes() << std::endl
-            << "strides: " << computeLinearStride(self_)
-            << std::endl
-            << std::endl;
-
-
 
   return self_;
 }
