@@ -210,6 +210,19 @@ static Tensor unsqueezeN(const Tensor& src, int64_t before, int64_t after) {
 
 // STUFF END
 
+
+//long cnt = 0L;
+//long total = 0L;
+
+
+
+__global__ void arange_kernel(int64_t n, int64_t* a) {
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+      i += blockDim.x * gridDim.x) {
+    a[i] = i;
+  }
+}
+
 static std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t, int64_t, int64_t, int64_t>
 makeLinearIndex(Tensor self, TensorList orig) {
   checkIndexTensorTypes(orig);
@@ -252,20 +265,48 @@ makeLinearIndex(Tensor self, TensorList orig) {
     }
   }
 
+//  ++cnt;
+//  auto start = std::chrono::high_resolution_clock::now();
+
   // Compute the linear indices for the parts of the tensor not being indexed
   // ...and not being sorted
   Tensor beforeIndex;
   if (emptyBefore > 0) {
-    beforeIndex = at::arange(0, nElemBefore, self.options().dtype(kLong)) * strides[emptyBefore - 1];
-    beforeIndex = beforeIndex.view(self.sizes().slice(0, emptyBefore));
-    beforeIndex = unsqueezeN(beforeIndex, 0, linearIndex.dim() + emptyAfter);
+    Tensor index = at::native::empty_cuda({nElemBefore},
+        self.options().dtype(kLong).device(at::DeviceType::CUDA));
+    int64_t *pData = index.data<int64_t>();
+    void* args[] = {&nElemBefore, &pData};
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    THCudaCheck(
+        cudaLaunchKernel((const void*) &arange_kernel,
+            GRID_SIZE, WARP_SIZE, args, 0, stream));
+    THCudaCheck(cudaStreamSynchronize(stream));
+    index = index * strides[emptyBefore - 1];
+    index = index.view(self.sizes().slice(0, emptyBefore));
+    beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
   }
   Tensor afterIndex;
   if (emptyAfter > 0) {
-    afterIndex = at::arange(0, nElemAfter, self.options().dtype(kLong));
-    afterIndex = afterIndex.view(self.sizes().slice(self.dim() - emptyAfter, emptyAfter));
-    afterIndex = unsqueezeN(afterIndex, linearIndex.dim() + emptyBefore, 0);
+    Tensor index = at::native::empty_cuda({nElemAfter},
+        self.options().dtype(kLong).device(at::DeviceType::CUDA));
+    int64_t *pData = index.data<int64_t>();
+    void* args[] = {&nElemAfter, &pData};
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    THCudaCheck(
+        cudaLaunchKernel((const void*) &arange_kernel,
+            GRID_SIZE, WARP_SIZE, args, 0, stream));
+    THCudaCheck(cudaStreamSynchronize(stream));
+    index = index.view(self.sizes().slice(self.dim() - emptyAfter, emptyAfter));
+    afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
   }
+
+//  auto finish = std::chrono::high_resolution_clock::now();
+//  total += std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count();
+//  if (cnt % 100 == 0) {
+//    std::cout << "kernel pars: " << total / cnt /1000 << "us" << std::endl;
+//  }
+
+
   return std::make_tuple(self, linearIndex, beforeIndex, afterIndex, emptyBefore, emptyAfter,
       nElemBefore, nElemAfter);
 }
@@ -392,8 +433,13 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
     auto sortedLinearIndex_iter = thrust::device_ptr<int64_t>(sortedLinearIndex_beg);
     auto origCounters_iter = thrust::device_ptr<int64_t>(origCounters_beg);
     auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
+    void* args[] = {&idxSize, &origCounters_beg};
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    THCudaCheck(
+        cudaLaunchKernel((const void*) &arange_kernel,
+            WARP_SIZE, GRID_SIZE, args, 0, stream));
+    THCudaCheck(cudaStreamSynchronize(stream));
 
-    thrust::sequence(policy, origCounters_iter, origCounters_iter + idxSize);
     thrust::sort_by_key(policy, sortedLinearIndex_iter, sortedLinearIndex_iter + idxSize,
         origCounters_iter, ThrustLTOp<int64_t>());
   });
