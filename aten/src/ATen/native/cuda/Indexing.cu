@@ -91,8 +91,9 @@
 #else
 #define WARP_SIZE 32
 #endif
-#define GRID_SIZE 128
+#define GRID_SIZE 512
 #define GROUP_SIZE 32
+//#define BLOCK_SIZE 32
 
 namespace at {
 namespace native {
@@ -297,20 +298,9 @@ makeLinearIndex(Tensor self, TensorList orig) {
       nElemBefore, nElemAfter);
 }
 
-template<typename T, typename IndexType>
-__device__ __forceinline__ IndexType
-indexToOffset(const at::cuda::detail::TensorInfo<T, IndexType>& info, IndexType linearIndex) {
-  IndexType offset(0);
-  for (int i = info.dims - 1; i > 0; --i) {
-    offset += (linearIndex % info.sizes[i]) * info.strides[i];
-    linearIndex /= info.sizes[i];
-  }
-  return offset + linearIndex * info.strides[0];
-}
-
 template<typename IndexType>
 __device__ __forceinline__
-IndexType indexToOffset(IndexType dims, IndexType* sizes, IndexType* strides,
+IndexType indexToOffset(IndexType dims, const IndexType* sizes, const IndexType* strides,
     IndexType linearIndex) {
   IndexType offset(0);
   for (IndexType i = dims - 1; i > 0; --i) {
@@ -320,126 +310,199 @@ IndexType indexToOffset(IndexType dims, IndexType* sizes, IndexType* strides,
   return offset + linearIndex* strides[0];
 }
 
-// Adjusts linear index to reflect resort of the inner tensor
-template<typename IndexType>
-__device__ __forceinline__
-IndexType adjustIndex(IndexType dims,
-    IndexType* sizes, IndexType* strides,
-    IndexType linearIndex, const IndexType* origOrder,
-    IndexType emptyBefore, IndexType emptyAfter) {
-  IndexType offset(0), processed(0);
-  IndexType sortedSize = dims - emptyBefore - emptyAfter;
-  for (IndexType i = dims - 1; i > 0; --i) {
-    IndexType orderedIndex = linearIndex;
-    if (i >= emptyBefore && dims - i < emptyAfter) {
-      // change order for sorted dimensions
-      orderedIndex =
-          origOrder[(linearIndex - processed) % sortedSize] + processed;
-    }
-    offset += (orderedIndex % sizes[i]) * strides[i];
-    linearIndex /= sizes[i];
-    processed += sizes[i];
-  }
-  return offset + linearIndex * strides[0];
-}
-
-
 template<typename index_t>
 __device__ __forceinline__
 index_t extended_idx(index_t nseq, index_t sortedSize,
-    index_t extendedSize, index_t extendedStride,
-    const int64_t* extendedIdx, const int64_t* origOrder) {
+    index_t extendedSize, index_t extendedStride, const int64_t* origOrder) {
   index_t aPart = nseq % sortedSize;
   index_t aPartOrdered = origOrder[aPart];
-  return nseq + (aPartOrdered - aPart) * extendedStride;
+  index_t ret = nseq + (aPartOrdered - aPart) * extendedStride;
+  if (ret < 0) {
+    ret += extendedSize;
+  } else if (ret >= extendedSize) {
+    ret -= extendedSize;
+  }
+//printf("============== %d %d      %d   %d * %d --> %d --> %d\n", nseq, aPart, aPartOrdered,
+//sortedSize, extendedStride, nseq + (aPartOrdered - aPart) * extendedStride, ret);
+  return ret;
 }
 
 //template<typename index_t>
 //__device__ __forceinline__
-//index_t extended_pos(index_t idx, index_t blockSize, index_t currentThreadInBlock,
-//    index_t baStride, index_t sortedSize, const int64_t* origOrder) {
-//  const index_t nseq = idx * blockSize + currentThreadInBlock;
-//  return extended_pos(nseq, baStride, sortedSize, origOrder);
+//index_t extended_pos(index_t nseq, index_t sortedSize,
+//    index_t extendedStride, const int64_t* origOrder, const int64_t* extendedIdx) {
+//  return extendedIdx[extended_idx(nseq, sortedSize, extendedStride, origOrder)];
 //}
-//
+
+
+template<typename scalar_t>
+__global__
+void backward_indexing_sum(scalar_t* dstData, int64_t* offsets, const scalar_t* values,
+    int64_t extendedSize, int64_t extendedStride) {
+  using accscalar_t = acc_type<scalar_t, true>;
+  int actualGroupSize = extendedSize / extendedStride;
+  int blockSize = blockDim.x * blockDim.y * blockDim.z;
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < extendedStride;// * GROUP_SIZE;
+       i += blockDim.x * gridDim.x) {
+    int beg = i % extendedStride;
+    for (int t = beg; t < beg + actualGroupSize; ++t) {
+      dstData[offsets[t]] += values[t];
+    }
+  }
+}
+
+
 template<typename scalar_t>
 __global__
 void backward_indexing_kernel(const int64_t* extendedIdx,
-    int64_t* origOrder, scalar_t* gradValues,
-    int64_t extendedIdxSize, int64_t extendedStride, int64_t sortedSize,
-    int sortedDims, int64_t* sortedSizes, int64_t* sortedStrides,
-    scalar_t* dstData,
-    int dstDims, int64_t* dstSizes, int64_t* dstStrides) {
+    const int64_t* origOrder, const scalar_t* gradValues,
+    int64_t extendedSize, int64_t extendedStride, int64_t sortedSize,
+    scalar_t* dstData, int64_t dstDims,
+    const int64_t* dstSizes, const int64_t* dstStrides) { //, int64_t* offsets, scalar_t* values) {
   using accscalar_t = acc_type<scalar_t, true>;
 
   int blockSize = blockDim.x * blockDim.y * blockDim.z;
-  int idxMax = (extendedIdxSize + blockSize - 1) / blockSize;
+//  int idxMax = (extendedSize + blockSize - 1) / blockSize;
   int idx = blockIdx.x;
+//  int idy = blockIdx.y;
 
-
+//  __shared__ int orderArr[GROUP_SIZE];
   __shared__ int offsetArr[GROUP_SIZE];
   __shared__ accscalar_t valArr[GROUP_SIZE];
 
+//  int blockHeadPos = extended_pos<int>(idx * blockSize, sortedSize,
+//      extendedStride, origOrder, extendedIdx);
+//  printf("!!!!!!!!!!!! %d %d %d %d\n", idxMax, idx, idy, blockSize);
 
+  const int realGroup = extendedSize / extendedStride;
 
-  int blockHeadPos = extended_idx<int>(idx * blockSize, sortedSize, extendedIdxSize,
-                                       extendedStride, extendedIdx, origOrder) ;
-
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x;
-       i < extendedIdxSize;
-       i += blockDim.x * gridDim.x) {
-
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < extendedSize;
+      i += blockDim.x * gridDim.x) {
 //    __syncwarp(GROUP_SIZE - 1);
     __syncthreads();
+//    const int currGroup = i % realGroup;
+    const int j = (i % realGroup) * extendedStride + i / realGroup;  // j goes along sorted dimensions
 
-    if (blockHeadPos < extendedIdxSize &&
-        (idx == 0 || blockHeadPos !=extended_idx<int>((idx- 1) * blockSize, sortedSize, extendedIdxSize,
-                                                      extendedStride, extendedIdx, origOrder))) {
+//    const int g = i % realGroup;
+//    const int currEntry = i;  // all duplicates in one bucket
+//    const int currStride = currEntry / extendedStride;
+
+    const int th = i % GROUP_SIZE;
+    const int entriesDone = idx * GROUP_SIZE;
+    const int extIdx = extended_idx<int>(j, sortedSize, extendedSize, extendedStride, origOrder);
+    const int dstIdx = extendedIdx[extIdx];
+
+//printf("################### %d %d %d     %d + %d: %d  \n", idx,i,j,entriesDone, th,  extIdx);
+
+    offsetArr[th] = indexToOffset<int64_t>(dstDims, dstSizes, dstStrides,
+        dstIdx);
+
+//        offsetArr[th] = extendedIdx[extIdx]; //offset;
+        valArr[th] = gradValues[extIdx];
+
+//const int    offset = extendedIdx[extIdx]; //offset;
+//const scalar_t value = gradValues[extIdx];
+
+//    printf("%d %lld      %d %lld  \n", i, offsets[i], j, offsets[j]);
+//
+//
+      __syncthreads();
+
+    //      const int g = i % realGroup;
+      if (th == 0) {
+//        int tl = realGroup < GROUP_SIZE ? realGroup : GROUP_SIZE;
+        int currentBlockEnd = extendedSize - entriesDone;
+          #pragma unroll
+          for (int t = 0; t < GROUP_SIZE; ++t ) {
+            if (t >= currentBlockEnd) {
+              break;
+            }
+//            printf("%d %d %lld  %lld\n", g, t, g*extendedStride+t, offsets[g*extendedStride+t]);
+
+            //          offsets[i] = extendedIdx[extIdx]; //offset;
+            //          values[i] = gradValues[extIdx];
+
+  //          int jt = orderArr[t];
+            dstData[offsetArr[t]] += valArr[t];
+
+           printf("%d      %d  \n", t, offsetArr[t]);
+
+
+          }
+      }
+  }
 
 
 
-      const int extIdx = extended_idx<int>(i, sortedSize, extendedIdxSize,
-                                           extendedStride, extendedIdx, origOrder);
-      const int extPos = extendedIdx[extIdx];
-      const int offset = indexToOffset<int64_t>(dstDims, dstSizes, dstStrides, extPos);
-      int th = i % GROUP_SIZE;
-      offsetArr[th] = offset;
-      valArr[th] = gradValues[extIdx];
-//      __syncwarp(GROUP_SIZE - 1);
-__syncthreads();
-      if (th == 0 && idx < idxMax) {
-        int currentBlockEnd = extendedIdxSize - idx * GROUP_SIZE;
+/*
+  __shared__ int offsetArr[GROUP_SIZE];
+  __shared__ accscalar_t valArr[GROUP_SIZE];
+
+  offsetArr[th] = extendedIdx[no];
+  valArr[th] = gradValues[no];
+  __syncthreads();
+  if (th == 0 && idx < idxMax) {
+    int currentBlockEnd = extendedIdxSize - idx * GROUP_SIZE;
+    currentBlockEnd =
+        currentBlockEnd < GROUP_SIZE ? currentBlockEnd : GROUP_SIZE;
+
+    //     printf("                %d %d %d %d\n", idx, i, th, currentBlockEnd); // TODO!!!
+
+    for (int t = 0; t < currentBlockEnd; ++t) {
+      dstData[offsetArr[t]] += valArr[t];
+
+      //        printf("%d %d %d\n", idx, t, offsetArr[t]);
+    }
+    __threadfence();
+  }
+*/
+
+
+  /*
+      if (th == 0) {
+        int currentBlockEnd = extendedSize - idx * GROUP_SIZE;
         currentBlockEnd = currentBlockEnd < GROUP_SIZE ? currentBlockEnd : GROUP_SIZE;
-        for (int t = 0; t < currentBlockEnd; ++t) {
-//          __threadfence();
-//printf("  ");
-          dstData[offsetArr[t]] += valArr[t];
 
-//          atomicAdd(dstData+offsetArr[t], valArr[t]);
+        int beg = i % extendedStride;
+        for (int t = beg; t < beg + GROUP_SIZE; ++t) {
+          offsets[t] = offsetArr[t-beg];
+          values[t] = valArr[t-beg];
+        }
+
+        for (int t = 0; t < GROUP_SIZE; ++t) {
+          dstData[offsetArr[t]] += valArr[t];
+          __threadfence();
         }
       }
-      ++idx;
-      int blockHeadPosNext = extended_idx<int>(idx * blockSize, sortedSize, extendedIdxSize,
-                                           extendedStride, extendedIdx, origOrder) ;
+    */
+      //ChildKernel<<<1, 32>>>(data);
+      //cudaThreadSynchronize();
+
+//      ++idx;
+//      if (idx >= idxMax) {
+//        ///        printf("***************** %d %d %d\n", blockHeadPos, idx, blockSize);
+//        break;
+//      }
+//
+//      int blockHeadPosNext = extended_pos<int>(idx * blockSize + extendedStride, sortedSize,
+//          extendedStride, origOrder, extendedIdx);
+//      if (blockHeadPosNext != blockHeadPos) {
+//        // next block is processing other images' indexes, exit.
+//        printf("---- %d != %d  %d %d\n", blockHeadPosNext, blockHeadPos, idx, blockSize);
+//        break;
+//      }
+//      blockHeadPos = blockHeadPosNext; // keep going in the same warp
+//
+//      printf("&&&&&&&&&&& %d %d %d\n", blockHeadPos, idx, blockSize);
+//
+//    } else {
+//
+//      printf("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX %d %d %d\n", blockHeadPos, idx, blockSize);
+//
+//    }
 
 
-//      const int blockHeadPosNext = indexToOffset<int64_t>(sortedDims, sortedSizes, sortedStrides,
-//          idx * blockSize, origOrder, sortedSize);
-
-//      int blockHeadPos = extended_idx<int>(idx * blockSize, sortedSize, extendedIdxSize,
-//                                           extendedStride, extendedIdx, origOrder) ;
-
-      if (blockHeadPosNext >= extendedIdxSize ||
-          blockHeadPosNext != blockHeadPos) {
-        // next block is processing other images' indexes, exit.
-        printf("---------------");
-        break;
-      }
-      blockHeadPos = blockHeadPosNext; // keep going in the same warp
-
-      printf("&&&&&&&&&&&&&&&&&");
-    }
-  }
+//  }
 }
 
 template<typename T>
@@ -450,13 +513,13 @@ struct TensorAccumFullyIndexedPutOp : thrust::unary_function<int64_t, T> {
         orig_idx_beg(orig_idx_beg) {}
 
   __device__ __forceinline__ T
-
   operator()(int64_t n) {
     const int64_t no = orig_idx_beg[n]; // restore if flipped
     const T* pvalue = p_source + no;
     const int64_t* pindex = sorted_idx_beg + no;
     const int64_t linear_index = *pindex;
-    const int64_t offset = indexToOffset<T, int64_t>(info, linear_index);
+    const int64_t offset = indexToOffset<int64_t>(info.dims, info.sizes, info.strides,
+        linear_index);
 
     if (pindex == sorted_idx_beg || *pindex != *(pindex - 1)) {
       do {
@@ -484,7 +547,8 @@ long total = 0L;
 
 
 
-Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, bool accumulate) {
+Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value,
+    bool accumulate) {
   if (indices.size() > (size_t) self_.dim()) {
     AT_INDEX_ERROR("too many indices for tensor of dimension ", self_.dim(), " (got ",
         indices.size(), ")");
@@ -555,46 +619,81 @@ Tensor& index_put_cuda_(Tensor& self_, TensorList indices, const Tensor& value, 
       linearIndex = linearIndex + afterIndex;
     }
 
+    std::cout << "### origCounters" << std::endl;
+    print(origCounters, 120);
+    std::cout << std::endl
+              << "strides: " << computeLinearStride(origCounters)
+              << std::endl
+              << std::endl;
+    std::cout << "### linearIndex" << std::endl;
+    print(linearIndex, 120);
+    std::cout << std::endl
+              << "strides: " << computeLinearStride(linearIndex)
+              << std::endl
+              << std::endl;
+
+
+
     AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_kernel_", [&] {
       cuda::detail::TensorInfo <scalar_t, int64_t> self_info =
           cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
 
-      cuda::detail::TensorInfo <int64_t, int64_t> sorted_info =
-          cuda::detail::getTensorInfo<int64_t, int64_t>(sortedLinearIndex);
-
-      int dstDims = self_info.dims;
-      int sortedDims = sorted_info.dims;
-
+//      cuda::detail::TensorInfo <int64_t, int64_t> sorted_info =
+//          cuda::detail::getTensorInfo<int64_t, int64_t>(sortedLinearIndex);
+//
+      int64_t dstDims = self_info.dims;
+//      int sortedDims = sorted_info.dims;
       Tensor dstSizes =
           CPU(kLong).tensorFromBlob(self_info.sizes, {dstDims}).cuda();
       Tensor dstStrides =
           CPU(kLong).tensorFromBlob(self_info.strides, {dstDims}).cuda();
-      Tensor sortedSizes =
-          CPU(kLong).tensorFromBlob(sorted_info.sizes, {sortedDims}).cuda();
-      Tensor sortedStrides =
-          CPU(kLong).tensorFromBlob(sorted_info.strides, {sortedDims}).cuda();
+//      Tensor sortedSizes =
+//          CPU(kLong).tensorFromBlob(sorted_info.sizes, {sortedDims}).cuda();
+//      Tensor sortedStrides =
+//          CPU(kLong).tensorFromBlob(sorted_info.strides, {sortedDims}).cuda();
       int64_t* dstSizesPtr = dstSizes.data<int64_t>();
       int64_t* dstStridesPtr = dstStrides.data<int64_t>();
-      int64_t* sortedSizesPtr = sortedSizes.data<int64_t>();
-      int64_t* sortedStridesPtr = sortedStrides.data<int64_t>();
+//      int64_t* sortedSizesPtr = sortedSizes.data<int64_t>();
+//      int64_t* sortedStridesPtr = sortedStrides.data<int64_t>();
+
+//      auto offsets = at::empty_like(linearIndex);
+//      auto values = at::empty_like(self);
+//      int64_t* offsetsPtr = offsets.data<int64_t>();
+//      scalar_t* valuesPtr = values.data<scalar_t>();
+
+      std::cout << "self" << std::endl;
+      print(self, 120);
+
+      std::cout << self.sizes() << std::endl
+      << "strides: " << computeLinearStride(self)<< std::endl<< std::endl;
+      std::cout << "value"  << std::endl;
+      print(value, 120);
+      std::cout << value.sizes() << std::endl
+                << "strides: " << computeLinearStride(value)<< std::endl<< std::endl;
 
       scalar_t* valuePtr = value.data<scalar_t>();
-      int64_t extendedIdxSize = linearIndex.numel();
+      int64_t extendedSize = linearIndex.numel();
       int64_t* origCountersPtr = origCounters.data<int64_t>();
       int64_t* extendedLinearIndexPtr = linearIndex.data<int64_t>();
 
-      dim3 blockSize(GROUP_SIZE);
       dim3 gridSize(GRID_SIZE);
+      dim3 blockSize(GROUP_SIZE);
       void* args[] = {&extendedLinearIndexPtr, &origCountersPtr, &valuePtr,
-                      &extendedIdxSize, &nElemAfter, &idxSize,
-                      &sortedDims, &sortedSizesPtr, &sortedStridesPtr,
-                      &self_info.data,
-                      &dstDims, &dstSizesPtr, &dstStridesPtr};
+                      &extendedSize, &nElemAfter, &idxSize,
+                      &self_info.data, &dstDims, &dstSizesPtr, &dstStridesPtr};//, &offsetsPtr, &valuesPtr};
+//      void* args2[] = {&self_info.data, &offsetsPtr, &valuesPtr,
+//                       &extendedSize, &nElemAfter};
       THCudaCheck(
           cudaLaunchKernel((const void*) &backward_indexing_kernel<scalar_t>, gridSize, blockSize,
               args, 0, stream));
+//      THCudaCheck(
+//          cudaLaunchKernel((const void*) &backward_indexing_sum<scalar_t>, gridSize, blockSize,
+//              args2, 0, stream));
+
       THCudaCheck(cudaStreamSynchronize(stream));
-      THCudaCheck(cudaGetLastError());
+
+
+
     });
   }
 
