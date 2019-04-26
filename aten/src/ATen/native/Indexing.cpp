@@ -220,42 +220,18 @@ static Tensor computeLinearIndex(const Tensor & src, TensorList indices) {
     }
   }
 
-std::cout << "############## -->> linearIndex " << std::endl;
-  print(linearIndex, 120);
-  std::cout << linearIndex.sizes() << std::endl
-            << "strides: " << computeLinearStride(linearIndex)
-            << std::endl
-            << std::endl;
-
   // Compute the linear indices for the parts of the tensor not being indexed
   Tensor beforeIndex;
   if (emptyBefore > 0) {
     auto index = at::arange(0, nElemBefore, src.options().dtype(kLong)) * strides[emptyBefore - 1];
     index = index.view(src.sizes().slice(0, emptyBefore));
     beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
-
-          std::cout << "############## beforeIndex" << std::endl;
-      print(beforeIndex, 120);
-      std::cout << beforeIndex.sizes() << std::endl
-                << "strides: " << computeLinearStride(beforeIndex)
-                << std::endl
-                << std::endl;
-
   }
   Tensor afterIndex;
   if (emptyAfter > 0) {
     auto index = at::arange(0, nElemAfter, src.options().dtype(kLong));
     index = index.view(src.sizes().slice(src.dim() - emptyAfter, emptyAfter));
     afterIndex = unsqueezeN(index, linearIndex.dim() + emptyBefore, 0);
-
-         std::cout << "############## afterIndex" << std::endl;
-      print(afterIndex, 120);
-      std::cout << afterIndex.sizes() << std::endl
-                << "strides: " << computeLinearStride(afterIndex)
-                << std::endl
-                << std::endl;
-
-
   }
 
   // Sum with broadcasting to compute the full index
@@ -266,17 +242,6 @@ std::cout << "############## -->> linearIndex " << std::endl;
   if (afterIndex.defined()) {
     linearIndex = linearIndex + afterIndex;
   }
-
-
-    std::cout << "############## linearIndex " << std::endl;
-    print(linearIndex, 120);
-    std::cout << linearIndex.sizes() << std::endl
-    << "strides: " << computeLinearStride(linearIndex)
-    << std::endl
-    << std::endl;
-
-
-
   return linearIndex;
 }
 
