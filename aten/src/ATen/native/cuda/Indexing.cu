@@ -216,10 +216,10 @@ static Tensor unsqueezeN(const Tensor& src, int64_t before, int64_t after) {
 
 
 
-__global__ void arange_kernel(int64_t n, int64_t* a) {
+__global__ void arange_kernel(int64_t n, int64_t* a, int64_t multiplier) {
   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
       i += blockDim.x * gridDim.x) {
-    a[i] = i;
+    a[i] = i * multiplier;
   }
 }
 
@@ -275,13 +275,14 @@ makeLinearIndex(Tensor self, TensorList orig) {
     Tensor index = at::native::empty_cuda({nElemBefore},
         self.options().dtype(kLong).device(at::DeviceType::CUDA));
     int64_t *pData = index.data<int64_t>();
-    void* args[] = {&nElemBefore, &pData};
+    int64_t multiplier = strides[emptyBefore - 1];
+    void* args[] = {&nElemBefore, &pData, &multiplier};
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     THCudaCheck(
         cudaLaunchKernel((const void*) &arange_kernel,
             GRID_SIZE, WARP_SIZE, args, 0, stream));
     THCudaCheck(cudaStreamSynchronize(stream));
-    index = index * strides[emptyBefore - 1];
+    //index = index * strides[emptyBefore - 1];
     index = index.view(self.sizes().slice(0, emptyBefore));
     beforeIndex = unsqueezeN(index, 0, linearIndex.dim() + emptyAfter);
   }
@@ -290,7 +291,8 @@ makeLinearIndex(Tensor self, TensorList orig) {
     Tensor index = at::native::empty_cuda({nElemAfter},
         self.options().dtype(kLong).device(at::DeviceType::CUDA));
     int64_t *pData = index.data<int64_t>();
-    void* args[] = {&nElemAfter, &pData};
+    int64_t multiplier = 1L;
+    void* args[] = {&nElemAfter, &pData, &multiplier};
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     THCudaCheck(
         cudaLaunchKernel((const void*) &arange_kernel,
@@ -433,7 +435,8 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
     auto sortedLinearIndex_iter = thrust::device_ptr<int64_t>(sortedLinearIndex_beg);
     auto origCounters_iter = thrust::device_ptr<int64_t>(origCounters_beg);
     auto self_info = cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
-    void* args[] = {&idxSize, &origCounters_beg};
+    int64_t multiplier = 1L;
+    void* args[] = {&idxSize, &origCounters_beg, &multiplier};
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     THCudaCheck(
         cudaLaunchKernel((const void*) &arange_kernel,
