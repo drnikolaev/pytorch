@@ -354,6 +354,7 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
   if (i >= extendedSize) {
     return;
   }
+  printf("** %lld %lld %lld %lld\n", extendedSize, extendedStride, sortedSize, dstDims);
 
   int dstIdxPrev = -1;
   bool done = false;
@@ -373,9 +374,11 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
         dstIdxPrev = dstIdx_;
         extIdx = extIdx_;
         dstIdx = dstIdx_;
+        printf("iii j START %d %d %d %d %d\n", i, j, dstIdxPrev,extIdx_, dstIdx_);
       } else if (bonusTrack) {
         if (dstIdxPrev != dstIdx_) {
           // (i+1)-th thread will handle this, exit
+          printf("iii j dstIdxPrev %d %d %d %d\n", i, j, dstIdxPrev, dstIdx_);
           done = true;
         } else {
           // keep rolling
@@ -386,11 +389,13 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
       } else {
         // (i-1)-th thread will handle this, exit
         done = (dstIdxPrev == dstIdx_);
+if (done)        printf("iii j (i-1) %d %d %d %d\n", i, j, dstIdxPrev, dstIdx_);
         break;
       }
       --iii;
     } while (iii >= 0);
     if (done) {
+      printf("iii %d DONE\n", i);
       break;
     }
     int offset = dstOffset<int64_t>(dstDims, dstSizes, dstStrides, dstIdx);
@@ -400,6 +405,9 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
     } else {
       dstData[offset] = gradValues[extIdx];
     }
+
+//    printf("offset->data %d %d %g\n", iii, offset, gradValues[extIdx]);
+
     dstIdxPrev = dstIdx;
     ++ii;
     bonusTrack = true;
@@ -452,10 +460,31 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
   linearIndex = unsqueezeN(linearIndex, emptyBefore, emptyAfter);
   if (emptyBefore > 0) {
     linearIndex = linearIndex + beforeIndex;
+
+  std::cout << "*********** linearIndex+ beforeIndex;" << std::endl
+    << linearIndex  << std::endl
+    << std::endl << linearIndex.sizes() << std::endl
+    << "strides: " << computeLinearStride(linearIndex)
+    << std::endl << std::endl;
+
+
   }
   if (emptyAfter > 0) {
     linearIndex = linearIndex + afterIndex;
+
+    std::cout << "*********** linearIndex+ afterIndex;" << std::endl
+              << linearIndex  << std::endl
+              << std::endl << linearIndex.sizes() << std::endl
+              << "strides: " << computeLinearStride(linearIndex)
+              << std::endl << std::endl;
+
   }
+
+//  std::cout << "*********** linearIndex" << std::endl
+//    << linearIndex  << std::endl
+//    << std::endl << linearIndex.sizes() << std::endl
+//    << "strides: " << computeLinearStride(linearIndex)
+//    << std::endl << std::endl;
 
   AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_kernel_", [&] {
     cuda::detail::TensorInfo <scalar_t, int64_t> self_info =
@@ -475,6 +504,10 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
     int64_t* dstSizesPtr = dstSizes.data<int64_t>();
     int64_t* dstStridesPtr = dstStrides.data<int64_t>();
 
+    std::cout << "nElemAfter " << std::endl
+              << nElemAfter  << std::endl << std::endl;
+
+
     dim3 gridSize(GRID_SIZE);
     dim3 blockSize(WARP_SIZE);
     void* args[] = {&extendedLinearIndexPtr, &origCountersPtr, &valuePtr,
@@ -490,3 +523,32 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
 }
 
 }}
+
+
+//long cnt = 0L;
+//long total = 0L;
+//
+//
+
+//++cnt;
+//auto start = std::chrono::high_resolution_clock::now();
+//
+//auto finish = std::chrono::high_resolution_clock::now();
+//total += std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count();
+//if (cnt % 100 == 0) {
+//std::cout << "AFTER indices: " << total / cnt << "ns" << std::endl;
+//}
+
+//    std::cout << "afterIndex" << std::endl;
+//                        print(afterIndex, 120);
+//                        std::cout << std::endl
+//                                  << "strides: " << computeLinearStride(afterIndex)
+//                                  << std::endl
+//                                  << std::endl;
+
+//std::cout << "*********** beforeIndex" << std::endl;
+//print(beforeIndex, 120);
+//std::cout << beforeIndex.sizes() << std::endl
+//<< "strides: " << computeLinearStride(beforeIndex)
+//<< std::endl
+//<< std::endl;

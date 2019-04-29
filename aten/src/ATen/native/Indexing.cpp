@@ -458,7 +458,20 @@ Tensor& index_put_(Tensor & self, TensorList indices, const Tensor & value, bool
   if (accumulate) { // && self.type().device_type() == kCUDA) {
     Tensor src, linearIndex, expandedValue;
     std::tie(src, linearIndex) = makeLinearIndex(self, indices);
+//
+//    std::cout << "+++++ value" << std::endl
+//              << value << std::endl
+//              << "strides: " << computeLinearStride(value)
+//              << std::endl << std::endl;
+//
     std::tie(expandedValue) = expand_inplace(linearIndex, value);
+//
+//    std::cout << "+++++ expandedValue" << std::endl
+//              << expandedValue  << std::endl
+//              << "strides: " << computeLinearStride(expandedValue)
+//              << std::endl << std::endl;
+//
+//
     Tensor& ret = src.put_(linearIndex, expandedValue, true);
     return ret;
   }
@@ -467,11 +480,6 @@ Tensor& index_put_(Tensor & self, TensorList indices, const Tensor & value, bool
   index_put_stub(iter->device_type(), *iter, info.indexed_sizes, info.indexed_strides, accumulate);
   return self;
 }
-
-//Tensor & xput_(Tensor & self, Tensor & index, const Tensor & source, bool accumulate,
-//    const Tensor & , const Tensor & , int64_t, int64_t) {
-//  return self.put_(index, source, accumulate);
-//}
 
 Tensor & index_copy_(Tensor & self, int64_t dim, const Tensor & index, const Tensor & source) {
   dim = maybe_wrap_dim(dim, self.dim());
