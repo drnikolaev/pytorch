@@ -313,16 +313,15 @@ makeLinearIndex(Tensor self, TensorList orig) {
       nElemBefore, nElemAfter);
 }
 
-template<typename IndexType>
 __device__ __forceinline__
-IndexType dstOffset(IndexType dims, const IndexType* sizes,
-    const IndexType* strides, IndexType linearIndex) {
-  IndexType offset(0);
-  for (IndexType i = dims - 1; i > 0; --i) {
-    offset += (linearIndex % sizes[i]) * strides[i];
-    linearIndex /= sizes[i];
+int dstOffset(int dims, const int64_t* sizes,
+    const int64_t* strides, int linearIndex) {
+  int offset(0);
+  for (int i = dims - 1; i > 0; --i) {
+    offset += (linearIndex % (int)sizes[i]) * (int)strides[i];
+    linearIndex /= (int)sizes[i];
   }
-  return offset + linearIndex* strides[0];
+  return offset + linearIndex * (int)strides[0];
 }
 
 template<typename index_t>
@@ -368,8 +367,8 @@ template<typename scalar_t>
 __global__
 void backward_indexing_kernel(const int64_t* extendedIdx,
     const int64_t* origOrder, const scalar_t* gradValues,
-    int64_t extendedSize, int64_t extendedStride, int64_t sortedSize,
-    scalar_t* dstData, int64_t dstDims,
+    int extendedSize, int extendedStride, //int sortedSize,
+    scalar_t* dstData, int dstDims,
     const int64_t* dstSizes, const int64_t* dstStrides,
     bool accumulate) {
   using accscalar_t = acc_type<scalar_t, true>;
@@ -398,9 +397,10 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
 //          extendedSize, extendedStride,
 //          origOrder);
 
-      int extIdx_ = (j % extendedStride) + origOrder[j / extendedStride] * extendedStride;
+      int extIdx_ = (j % extendedStride) + (int)origOrder[j / extendedStride] * extendedStride;
+    //  int dstIdx_ = extendedIdx[extIdx_];
 
-      int dstIdx_ = extendedIdx[extIdx_];
+      int dstIdx_ = (int)extendedIdx[extIdx_];
       if (dstIdxPrev < 0) {
         dstIdxPrev = dstIdx_;
         extIdx = extIdx_;
@@ -429,7 +429,7 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
   //    printf("iii %d DONE\n", i);
       break;
     }
-    int offset = dstOffset<int64_t>(dstDims, dstSizes, dstStrides, dstIdx);
+    int offset = dstOffset(dstDims, dstSizes, dstStrides, dstIdx);
 
 /*
     IndexType dstOffset(IndexType dims, const IndexType* sizes,
@@ -474,8 +474,8 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
 
   Tensor linearIndex;
   Tensor beforeIndex, afterIndex;
-  int64_t emptyBefore = 0L, emptyAfter = 0L;
-  int64_t nElemBefore = 1L, nElemAfter = 1L;
+  int emptyBefore = 0, emptyAfter = 0;
+  int nElemBefore = 1, nElemAfter = 1;
 
   std::tie(self, linearIndex, beforeIndex, afterIndex, emptyBefore, emptyAfter, nElemBefore,
       nElemAfter) = makeLinearIndex(self, indices);
@@ -544,7 +544,7 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
   AT_DISPATCH_FLOATING_TYPES(self.scalar_type(), "index_put_cuda_kernel_", [&] {
     cuda::detail::TensorInfo <scalar_t, int64_t> self_info =
         cuda::detail::getTensorInfo<scalar_t, int64_t>(self);
-    int64_t dstDims = self_info.dims;
+    int dstDims = self_info.dims;
     Tensor dstSizes =
         CPU(kLong).tensorFromBlob(self_info.sizes, {dstDims});
     Tensor dstStrides =
@@ -553,7 +553,7 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
     dstStrides = dstStrides.to(at::DeviceType::CUDA, kLong, true, true);
 
     scalar_t* valuePtr = value.data<scalar_t>();
-    int64_t extendedSize = linearIndex.numel();
+    int extendedSize = linearIndex.numel();
     int64_t* origCountersPtr = origCounters.data<int64_t>();
     int64_t* extendedLinearIndexPtr = linearIndex.data<int64_t>();
     int64_t* dstSizesPtr = dstSizes.data<int64_t>();
@@ -566,7 +566,7 @@ Tensor& index_put_cuda_(Tensor& self, TensorList indices, const Tensor& value,
     dim3 gridSize(GRID_SIZE);
     dim3 blockSize(WARP_SIZE);
     void* args[] = {&extendedLinearIndexPtr, &origCountersPtr, &valuePtr,
-                    &extendedSize, &nElemAfter, &idxSize,
+                    &extendedSize, &nElemAfter, //&idxSize,
                     &self_info.data, &dstDims, &dstSizesPtr, &dstStridesPtr,
                     &accumulate};
     THCudaCheck(
