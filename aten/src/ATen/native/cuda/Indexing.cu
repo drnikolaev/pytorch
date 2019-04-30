@@ -429,9 +429,29 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
   //    printf("iii %d DONE\n", i);
       break;
     }
-    int offset = dstOffset<int64_t>(dstDims, dstSizes, dstStrides, dstIdx);
+//    int offset = dstOffset<int64_t>(dstDims, dstSizes, dstStrides, dstIdx);
+
+/*
+    IndexType dstOffset(IndexType dims, const IndexType* sizes,
+        const IndexType* strides, IndexType linearIndex) {
+      IndexType offset(0);
+      for (IndexType i = dims - 1; i > 0; --i) {
+        offset += (linearIndex % sizes[i]) * strides[i];
+        linearIndex /= sizes[i];
+      }
+      return offset + linearIndex* strides[0];
+*/
+
+    int offset = 0;
+    int li = dstIdx;
+    for (int k = dstDims - 1; k > 0; --k) {
+      offset += (li % dstSizes[k]) * dstStrides[k];
+      li /= dstSizes[k];
+    }
+    offset += li * dstStrides[0];
+
     if (accumulate) {
-      // it's now safe, one thread comes here
+    // it's now safe, one thread comes here
       dstData[offset] += gradValues[extIdx];
     } else {
       dstData[offset] = gradValues[extIdx];
