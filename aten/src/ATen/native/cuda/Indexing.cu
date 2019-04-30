@@ -429,7 +429,7 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
   //    printf("iii %d DONE\n", i);
       break;
     }
-//    int offset = dstOffset<int64_t>(dstDims, dstSizes, dstStrides, dstIdx);
+    int offset = dstOffset<int64_t>(dstDims, dstSizes, dstStrides, dstIdx);
 
 /*
     IndexType dstOffset(IndexType dims, const IndexType* sizes,
@@ -442,13 +442,13 @@ void backward_indexing_kernel(const int64_t* extendedIdx,
       return offset + linearIndex* strides[0];
 */
 
-    int offset = 0;
-    int li = dstIdx;
-    for (int k = dstDims - 1; k > 0; --k) {
-      offset += (li % dstSizes[k]) * dstStrides[k];
-      li /= dstSizes[k];
-    }
-    offset += li * dstStrides[0];
+//    int offset = 0;
+//    int li = dstIdx;
+//    for (int k = dstDims - 1; k > 0; --k) {
+//      offset += (li % dstSizes[k]) * dstStrides[k];
+//      li /= dstSizes[k];
+//    }
+//    offset += li * dstStrides[0];
 
     if (accumulate) {
     // it's now safe, one thread comes here
