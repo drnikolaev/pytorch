@@ -5,6 +5,9 @@ import unittest
 
 
 class TestIndexing(TestCase):
+    def setUp(self):
+        torch.set_default_tensor_type(torch.FloatTensor)
+
     def test_single_int(self):
         v = torch.randn(5, 7, 3)
         self.assertEqual(v[4].shape, (7, 3))
@@ -368,6 +371,9 @@ class TestIndexing(TestCase):
 
 
 class NumpyTests(TestCase):
+    def setUp(self):
+        torch.set_default_tensor_type(torch.FloatTensor)
+
     def test_index_no_floats(self):
         a = torch.tensor([[[5.]]])
 
