@@ -195,12 +195,12 @@ void index_put_accum_kernel(Tensor & self, TensorList indices, const Tensor & va
       sorted_indices.copy_(linearIndex);
       auto allocator = THCThrustAllocator(globalContext().lazyInitCUDA());
       auto policy = thrust::cuda::par(allocator).on(stream);
-    
+
       // Fill sortedOrigIndices with sequential indices
       auto count_iter = thrust::counting_iterator<int64_t>(0);
       auto orig_data = device_ptr(orig_indices.data<int64_t>());
       thrust::copy(policy, count_iter, count_iter + num_indices, orig_data);
-    
+
       // Sort; a stable sort is not required
       auto sorted_data = device_ptr(sorted_indices.data<int64_t>());
       thrust::sort_by_key(policy, sorted_data, sorted_data + num_indices, orig_data, ThrustLTOp<int64_t>());
