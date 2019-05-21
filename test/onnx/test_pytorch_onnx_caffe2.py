@@ -146,7 +146,7 @@ class TestCaffe2Backend(unittest.TestCase):
         if use_gpu:
             model, input = self.convert_cuda(model, input)
 
-        onnxir, torch_out = do_export(model, input, export_params=self.embed_params, verbose=False,
+        onnxir, torch_out = do_export(model, input, export_params=self.embed_params, verbose=True,
                                       example_outputs=example_outputs,
                                       do_constant_folding=False)
         if isinstance(torch_out, torch.autograd.Variable):
