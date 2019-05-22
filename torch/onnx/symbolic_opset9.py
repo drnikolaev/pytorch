@@ -275,6 +275,7 @@ def embedding_bag(g,
                 sparse_i=sparse)
 
 
+@parse_args('v', 'i')
 def size(g, self, dim):
     #self_sizes = self.type().sizes()
     # input = next(g.inputs())
@@ -283,13 +284,15 @@ def size(g, self, dim):
     dim_val = _parse_arg(dim, 'i')
     #    return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
     # self_sizes = next(g.inputs()).type().sizes()
-    self_sizes = next(g.inputs()).type().sizes()
+    #self_sizes = next(g.inputs()).type().sizes()
     # sz = g.op("Shape", self, axes_i = self_sizes[dim_val])
     # tsz = torch.tensor(sz)
     #return select(g, full_shape, g.op("Constant", value_t=torch.tensor(self_sizes[dim_val])), dim)
     # szn = sz.node(0)
-    c = g.op("Constant", value_t = torch.tensor(self_sizes[dim_val]))
-    return c
+    # c = g.op("Constant", value_t = torch.tensor(self_sizes[dim_val]))
+    s = g.op("Shape", self, torch.tensor([dim_val]))
+    return s
+    # return g.op("ConstantOfShape", s, value_t=torch.tensor(self_sizes[dim_val]))
 
 
     # self_sizes = self.type().sizes()
