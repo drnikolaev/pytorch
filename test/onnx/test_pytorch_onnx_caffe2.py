@@ -308,6 +308,10 @@ class TestCaffe2Backend(unittest.TestCase):
             seq_lengths = list(reversed(sorted(map(int, seq_lengths))))
             inputs = [torch.randn(l, RNN_INPUT_SIZE) for l in seq_lengths]
             inputs = rnn_utils.pad_sequence(inputs, batch_first=batch_first)
+
+            print("************************************** ", inputs.numel(), "\n")
+
+
             inputs = [inputs]
 
             directions = 2 if bidirectional else 1
@@ -321,6 +325,11 @@ class TestCaffe2Backend(unittest.TestCase):
                 input = inputs[0]
             else:
                 input = tuple(inputs)
+
+            nm = input.size()
+            print("++++++++++++++++++++++++++++ ", nm, "\n")
+
+
             return input
 
         input = make_input(RNN_BATCH_SIZE)

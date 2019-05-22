@@ -53,7 +53,7 @@ def set_training(model, mode):
             model.train(old_mode)
 
 
-def export(model, args, f, export_params=True, verbose=False, training=False,
+def export(model, args, f, export_params=True, verbose=True, training=False,
            input_names=None, output_names=None, aten=False, export_raw_ir=False,
            operator_export_type=None, opset_version=None, _retain_param_name=True,
            do_constant_folding=False, strip_doc_string=True):
@@ -231,7 +231,7 @@ def _trace_and_get_graph_from_model(model, args, training):
     return trace.graph(), torch_out
 
 
-def _model_to_graph(model, args, verbose=False, training=False,
+def _model_to_graph(model, args, verbose=True, training=False,
                     input_names=None, output_names=None,
                     operator_export_type=OperatorExportTypes.ONNX,
                     example_outputs=None, propagate=False,
@@ -343,7 +343,7 @@ def _export_to_pretty_string(model, args, f, export_params=True, verbose=False, 
 # the trace of a Module. In the case that a torch.nn.ScriptModule is passed in,
 # this output will be None, since we are not doing any tracing but rather
 # directly extracting the graph.
-def _export(model, args, f, export_params=True, verbose=False, training=False,
+def _export(model, args, f, export_params=True, verbose=True, training=False,
             input_names=None, output_names=None, operator_export_type=OperatorExportTypes.ONNX,
             export_type=ExportTypes.PROTOBUF_FILE, example_outputs=None, propagate=False,
             opset_version=None, _retain_param_name=False, do_constant_folding=False,
