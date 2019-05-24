@@ -275,13 +275,13 @@ def embedding_bag(g,
                 sparse_i=sparse)
 
 
-@parse_args('v', 'i')
+# @parse_args('v', 'i')
 def size(g, self, dim):
     #self_sizes = self.type().sizes()
     # input = next(g.inputs())
     # self_sizes = input.type().sizes()
     #if self_sizes:
-    dim_val = _parse_arg(dim, 'i')
+    # dim_val = _parse_arg(dim, 'i')
     #    return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
     # self_sizes = next(g.inputs()).type().sizes()
     #self_sizes = next(g.inputs()).type().sizes()
@@ -290,19 +290,24 @@ def size(g, self, dim):
     #return select(g, full_shape, g.op("Constant", value_t=torch.tensor(self_sizes[dim_val])), dim)
     # szn = sz.node(0)
     # c = g.op("Constant", value_t = torch.tensor(self_sizes[dim_val]))
-    s = g.op("Shape", self, torch.tensor([dim_val]))
-    return s
+    # s = g.op("Shape", self, torch.tensor([dim_val]))
+    # return s
     # return g.op("ConstantOfShape", s, value_t=torch.tensor(self_sizes[dim_val]))
 
-
+    # dim_val = 0
     # self_sizes = self.type().sizes()
-    # # input = next(g.inputs())
-    # # self_sizes = input.type().sizes()
     # if self_sizes:
     #     dim_val = _parse_arg(dim, 'i')
-    #     return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
+    #     # return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
     # full_shape = g.op("Shape", self)
-    # return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
+    # return select(g, full_shape, dim_val, dim)
+
+    self_sizes = self.type().sizes()
+    if self_sizes:
+        dim_val = _parse_arg(dim, 'i')
+        return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
+    full_shape = g.op("Shape", self)
+    return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
 
 
 @parse_args('v', 'i', 'i')
