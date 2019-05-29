@@ -153,7 +153,7 @@ void ShowLogInfoToStderr() {
 
 C10_DEFINE_int(
     caffe2_log_level,
-    ERROR,
+    -3,
     "The minimum log level that caffe2 will output.");
 
 namespace c10 {

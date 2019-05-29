@@ -59,6 +59,10 @@ class FillerOp : public Operator<Context> {
         if (this->InputIsTensorType(0, CPU)) {
           // originally, shape input must be in CPU context
           auto& input = this->template Input<Tensor>(0, CPU);
+
+          std::cout << "&&&&&&&&&&&&&&&&&&&&&&&&&&\n" << input << " " << input.dim()
+          << std::endl;
+
           CAFFE_ENFORCE_EQ(
               input.dim(),
               1,

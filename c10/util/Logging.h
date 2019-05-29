@@ -18,7 +18,7 @@
 #ifndef CAFFE2_LOG_THRESHOLD
 // If we have not defined the compile time log threshold, we keep all the
 // log cases.
-#define CAFFE2_LOG_THRESHOLD INT_MIN
+#define CAFFE2_LOG_THRESHOLD (-3)
 #endif // CAFFE2_LOG_THRESHOLD
 
 // Below are different implementations for glog and non-glog cases.

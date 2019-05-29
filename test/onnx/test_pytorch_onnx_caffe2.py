@@ -36,6 +36,8 @@ from model_defs.rnn_model_with_packed_sequence import RnnModelWithPackedSequence
 from caffe2.python.operator_test.torch_integration_test import (generate_rois_rotated,
                                                                 create_bbox_transform_inputs)
 
+from caffe2.python import workspace
+
 import onnx
 import caffe2.python.onnx.backend as c2
 
@@ -1747,4 +1749,8 @@ TestCaffe2BackendEmbed = type(str("TestCaffe2BackendEmbed"),
 
 
 if __name__ == '__main__':
+    workspace.GlobalInit([
+        'caffe2',
+        '--caffe2_log_level=0',
+    ])
     unittest.main()
