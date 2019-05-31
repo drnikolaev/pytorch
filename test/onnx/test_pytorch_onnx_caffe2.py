@@ -155,7 +155,7 @@ class TestCaffe2Backend(unittest.TestCase):
 
         onnxir, torch_out = do_export(model, input, export_params=self.embed_params, verbose=True,
                                       example_outputs=example_outputs,
-                                      do_constant_folding=False)
+                                      do_constant_folding=True)
         if isinstance(torch_out, torch.autograd.Variable):
             torch_out = (torch_out,)
 

@@ -58,9 +58,25 @@ void buildParamsMapFromValueToParamsMap(
 void eraseUnusedBlockInputs(Block* b) {
   for (size_t i_1 = b->inputs().size(); i_1 > 0; --i_1) {
     size_t i = i_1 - 1;
+
+//    std::cout << reinterpret_cast<DimensionedTensorType*>(b->inputs().at(i)->type().get())->scalarType() << std::endl;
+
+//    if (reinterpret_cast<DimensionedTensorType*>(b->inputs().at(i)->type().get())->scalarType() == c10::ScalarType::Long) {
+//      b->eraseInput(i);
+//    } else
+
     if (!b->inputs().at(i)->hasUses()) {
       b->eraseInput(i);
     }
+//    else {
+//      if (reinterpret_cast<DimensionedTensorType*>(b->inputs().at(i)->type().get())->scalarType() == c10::ScalarType::Long) {
+//
+//        b->inputs().at(i)->uses().data()->user->print(std::cout, 1, nullptr);
+//
+//
+//      }
+//
+//    }
   }
 }
 
@@ -206,6 +222,7 @@ std::vector<Node*> getOnnxConstParentsToRemove(Node* node) {
 // constant-based computations/ops into an initializer node.
 void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
   AT_ASSERT(b->param_node());
+//  std::cerr << b->owningGraph()->toString() << std::endl;
   auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
   // Only the root block is constant-folded. Folding nested blocks is
   // not supported for now.
@@ -235,11 +252,18 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     // corresponding entryin valToParamMap. Replace the downstream inputs
     // with this value, and disconnect all the input values of the folded node.
     at::Tensor updatedVal = *updatedValWrapped;
+
+//    std::cerr << updatedVal.toString() << std::endl;
+
     auto newSourceNodeOutput = b->addInput();
     valsToParamsMap.insert(
         {newSourceNodeOutput,
          std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
     newSourceNodeOutput->inferTypeFrom(updatedVal);
+
+//    newSourceNodeOutput->node()->print(std::cout, 1, nullptr);
+    //print(std::cout, const_cast<Node*>(n), nullptr);
+
     node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
 
     // Next we remove the current node that has been replaced by
@@ -257,7 +281,9 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     it.destroyCurrent();
   }
   eraseUnusedValuesFromMap(valsToParamsMap);
+//  std::cout << b->owningGraph()->toString() << std::endl;
   eraseUnusedBlockInputs(b);
+//  std::cerr << b->owningGraph()->toString() << std::endl;
   buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
   return;
 }
