@@ -253,7 +253,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     // with this value, and disconnect all the input values of the folded node.
     at::Tensor updatedVal = *updatedValWrapped;
 
-//    std::cerr << updatedVal.toString() << std::endl;
+    std::cerr << updatedVal.toString() << std::endl;
 
     auto newSourceNodeOutput = b->addInput();
     valsToParamsMap.insert(
@@ -261,7 +261,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
          std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
     newSourceNodeOutput->inferTypeFrom(updatedVal);
 
-//    newSourceNodeOutput->node()->print(std::cout, 1, nullptr);
+    newSourceNodeOutput->node()->print(std::cout, 1, nullptr);
     //print(std::cout, const_cast<Node*>(n), nullptr);
 
     node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
@@ -281,9 +281,9 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     it.destroyCurrent();
   }
   eraseUnusedValuesFromMap(valsToParamsMap);
-//  std::cout << b->owningGraph()->toString() << std::endl;
+  std::cout << "BEFORE\n" << b->owningGraph()->toString() << std::endl;
   eraseUnusedBlockInputs(b);
-//  std::cerr << b->owningGraph()->toString() << std::endl;
+  std::cerr << "AFTER\n"  << b->owningGraph()->toString() << std::endl;
   buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
   return;
 }

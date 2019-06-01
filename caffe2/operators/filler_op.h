@@ -59,33 +59,15 @@ class FillerOp : public Operator<Context> {
         if (this->InputIsTensorType(0, CPU)) {
           // originally, shape input must be in CPU context
           auto& input = this->template Input<Tensor>(0, CPU);
-
-          if (input.dtype() == caffe2::TypeMeta::Make<int64_t>()) {
-            //            std::cout << "&&&&&&&&&&&&&&&&&&&&&&&&&&\n" << input.template data<int64_t>()[0] << " " << input.template data<int64_t>()[1] << " " << input.dim()
-            //                      << std::endl;
-            //          } else {
-            //            std::cout << "#################\n" << input.dtype() << " " << caffe2::TypeMeta::Make<int64_t>() << std::endl;
-            //
-            //          }
-            //          std::cout << "&&&&&&&&&&&&&&&&&&&&&&&&&&\n" << input.template data<int64_t>()[0] << " " << input.template data<int64_t>()[1] << " " << input.dim()
-            //          << std::endl;
-
-            CAFFE_ENFORCE_EQ(input.dim(), 1,
-                "When input_as_shape is true, the input must be a 1D tensor of "
-                "data type int64_t");
-            CAFFE_ENFORCE(input.numel() > 0);
-            auto* shape_data = input.template data<int64_t>();
-            shape.insert(shape.end(), shape_data, shape_data + input.dim32(0));
-          }
-          else {
-//            std::cout << "&&&&&&&&&&&&&&&&&&&&&&&&&&\n" << input.template data<float>()[0] << " " << input.template data<float>()[1] << " " << input.dim();
-//            auto& input = Input(0);
-//            shape.insert(shape.end(), input.sizes().begin(), input.sizes().end());
-//            output->Resize(shape_);
-//            return Fill(output);
-            return true;
-          }
-
+          CAFFE_ENFORCE_EQ(input.dim(), 1,
+              "When input_as_shape is true, the input must be a 1D tensor of "
+              "data type int64_t");
+          CAFFE_ENFORCE_EQ(input.dtype(), caffe2::TypeMeta::Make<int64_t>(),
+              "When input_as_shape is true, the input must be a 1D tensor of "
+              "data type int64_t");
+          CAFFE_ENFORCE(input.numel() > 0);
+          auto* shape_data = input.template data<int64_t>();
+          shape.insert(shape.end(), shape_data, shape_data + input.dim32(0));
         } else {
           // in ONNX case, we allow shape to be in CUDA context
           auto& input = Input(0);
