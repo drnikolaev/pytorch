@@ -53,7 +53,7 @@ def set_training(model, mode):
             model.train(old_mode)
 
 
-def export(model, args, f, export_params=True, verbose=True, training=False,
+def export(model, args, f, export_params=True, verbose=False, training=False,
            input_names=None, output_names=None, aten=False, export_raw_ir=False,
            operator_export_type=None, opset_version=None, _retain_param_name=True,
            do_constant_folding=False, example_outputs=None, strip_doc_string=True):
@@ -233,7 +233,7 @@ def _trace_and_get_graph_from_model(model, args, training):
     return trace.graph(), torch_out
 
 
-def _model_to_graph(model, args, verbose=True, training=False,
+def _model_to_graph(model, args, verbose=False, training=False,
                     input_names=None, output_names=None,
                     operator_export_type=OperatorExportTypes.ONNX,
                     example_outputs=None, propagate=False,
@@ -348,10 +348,10 @@ def _export_to_pretty_string(model, args, f, export_params=True, verbose=False, 
 # the trace of a Module. In the case that a torch.nn.ScriptModule is passed in,
 # this output will be None, since we are not doing any tracing but rather
 # directly extracting the graph.
-def _export(model, args, f, export_params=True, verbose=True, training=False,
+def _export(model, args, f, export_params=True, verbose=False, training=False,
             input_names=None, output_names=None, operator_export_type=OperatorExportTypes.ONNX,
             export_type=ExportTypes.PROTOBUF_FILE, example_outputs=None, propagate=False,
-            opset_version=None, _retain_param_name=False, do_constant_folding=False,
+            opset_version=None, _retain_param_name=False, do_constant_folding=True,
             strip_doc_string=True):
     global __IN_ONNX_EXPORT
     assert __IN_ONNX_EXPORT is False
@@ -525,6 +525,16 @@ def _graph_op(g, opname, *raw_args, **kwargs):
             in positional.
     """
     outputs = kwargs.pop('outputs', 1)
+
+    # v = kwargs.get('value_t', None)
+    # if (v is not None):
+    #     print("### ", v.tolist())
+    #     print("dim  ", v.dim())
+    #     if (v.dim()>0):
+    #         print("size ", v.size(0))
+    #     if (v.dim()==0 and v.data.item() in [2, 9216]):
+    #         print("!!!", v.data.item())
+    #     # print("### ", v.data.item() if v.dim()==1 and v.size(0)==1 else v.tolist())
 
     # Filter out None attributes, this can be convenient client side because
     # now they can pass through None attributes, and have them not show up

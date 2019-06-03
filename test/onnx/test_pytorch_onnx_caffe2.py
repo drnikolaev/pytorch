@@ -36,8 +36,6 @@ from model_defs.rnn_model_with_packed_sequence import RnnModelWithPackedSequence
 from caffe2.python.operator_test.torch_integration_test import (generate_rois_rotated,
                                                                 create_bbox_transform_inputs)
 
-from caffe2.python import workspace
-
 import onnx
 import caffe2.python.onnx.backend as c2
 
@@ -136,7 +134,8 @@ class TestCaffe2Backend(unittest.TestCase):
         return cuda_model, cuda_input
 
     def run_debug_test(self, model, train, batch_size, state_dict=None,
-                       input=None, use_gpu=True, example_outputs=None):
+                       input=None, use_gpu=True, example_outputs=None,
+                       do_constant_folding=True):
         """
         # TODO: remove this from the final release version
         This test is for our debugging only for the case where
@@ -155,7 +154,7 @@ class TestCaffe2Backend(unittest.TestCase):
 
         onnxir, torch_out = do_export(model, input, export_params=self.embed_params, verbose=True,
                                       example_outputs=example_outputs,
-                                      do_constant_folding=True)
+                                      do_constant_folding=do_constant_folding)
         if isinstance(torch_out, torch.autograd.Variable):
             torch_out = (torch_out,)
 
@@ -202,7 +201,8 @@ class TestCaffe2Backend(unittest.TestCase):
                                  do_constant_folding=do_constant_folding)
         else:
             self.run_debug_test(model, train, batch_size, state_dict, input,
-                                use_gpu=use_gpu_, example_outputs=example_outputs)
+                                use_gpu=use_gpu_, example_outputs=example_outputs,
+                                do_constant_folding=do_constant_folding)
 
     def test_linear(self):
         class MyModel(torch.nn.Module):
@@ -310,17 +310,11 @@ class TestCaffe2Backend(unittest.TestCase):
         if packed_sequence == 2:
             model = RnnModelWithPackedSequence(model, True)
 
-        print(model)
-
         def make_input(batch_size):
             seq_lengths = np.random.randint(1, RNN_SEQUENCE_LENGTH + 1, size=batch_size)
             seq_lengths = list(reversed(sorted(map(int, seq_lengths))))
             inputs = [torch.randn(l, RNN_INPUT_SIZE) for l in seq_lengths]
             inputs = rnn_utils.pad_sequence(inputs, batch_first=batch_first)
-
-            # print("************************************** ", inputs.numel(), "\n")
-
-
             inputs = [inputs]
 
             directions = 2 if bidirectional else 1
@@ -334,11 +328,6 @@ class TestCaffe2Backend(unittest.TestCase):
                 input = inputs[0]
             else:
                 input = tuple(inputs)
-
-            # nm = input.size()
-            # print("++++++++++++++++++++++++++++ ", nm, "\n")
-
-
             return input
 
         input = make_input(RNN_BATCH_SIZE)
@@ -442,11 +431,9 @@ class TestCaffe2Backend(unittest.TestCase):
         if self.embed_params:
             assert len(prepared.init_net.op) == 875
             assert len(prepared.predict_net.op) == 130
-        # else:
-            # self.assertEqual(8, len(prepared.init_net.op))
-            # self.assertEqual(997, len(prepared.predict_net.op))
-            # assert len(prepared.init_net.op) == 8
-            # assert len(prepared.predict_net.op) == 997
+        else:
+            assert len(prepared.init_net.op) == 8
+            assert len(prepared.predict_net.op) == 997
 
     def test_alexnet(self):
         state_dict = model_zoo.load_url(model_urls['alexnet'], progress=False)
@@ -1841,8 +1828,4 @@ TestCaffe2BackendEmbed = type(str("TestCaffe2BackendEmbed"),
 
 
 if __name__ == '__main__':
-    workspace.GlobalInit([
-        'caffe2',
-        '--caffe2_log_level=0',
-    ])
     unittest.main()
