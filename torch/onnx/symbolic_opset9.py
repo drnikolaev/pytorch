@@ -283,10 +283,10 @@ def embedding_bag(g,
 
 # @parse_args('v', 'i')
 def size(g, self, dim):
-    self_sizes = self.type().sizes()
-    if self_sizes:
-        dim_val = _parse_arg(dim, 'i')
-        return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
+    # self_sizes = self.type().sizes()
+    # if self_sizes:
+    #     dim_val = _parse_arg(dim, 'i')
+    #     return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
     full_shape = g.op("Shape", self)
     return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
 

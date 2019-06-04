@@ -211,7 +211,13 @@ int collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& rem
   if (level > 10) {
     return -1; // stack overflow
   }
-//  node->print(std::cerr, level, nullptr);
+
+  std::cerr << "kind: " << node->kind().toDisplayString() << "  ";
+  node->print(std::cerr, level, nullptr);
+//  if (node->kind() == prim::Param) {
+//    return -2;
+//  }
+
   int ret = 0;
   if (node->kind() == onnx::Concat ||
       node->kind() == onnx::Unsqueeze ||
@@ -228,8 +234,8 @@ int collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& rem
       for (auto name : names) {
         if (name == attr::value && node->kindOf(name) == AttributeKind::t) {
           at::Tensor val = node->t(name).dim() == 0 ? node->t(name).unsqueeze(0) : node->t(name);
-//          std::cout << val.toString() << " "
-//          << val.sizes() << " : " << val.item().toLong() << std::endl;
+          std::cout << std::string(level, ' ') << val.toString() << " "
+          << val.sizes() << " : " << val.item().toLong() << std::endl;
           inputTensorValues.push_back(val);
           ret = 1;
           break;
@@ -275,7 +281,23 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
   %46 : Tensor = onnx::Unsqueeze[axes=[0]](%45)
   %47 : Tensor = onnx::Concat[axis=0](%46, %43, %44)
   %48 : Tensor = onnx::ConstantOfShape(%47)
+
+
+  %25 : Long() = onnx::Constant[value={1}](), scope: RNN
+  %26 : Tensor = onnx::Shape(%input), scope: RNN
+  %27 : Long() = onnx::Gather[axis=0](%26, %25), scope: RNN
+  %28 : Long() = onnx::Constant[value={6}](), scope: RNN
+  %29 : Long() = onnx::Constant[value={3}](), scope: RNN
+  %30 : Tensor = onnx::Unsqueeze[axes=[0]](%28)
+  %31 : Tensor = onnx::Unsqueeze[axes=[0]](%27)
+  %32 : Tensor = onnx::Unsqueeze[axes=[0]](%29)
+  %33 : Tensor = onnx::Concat[axis=0](%30, %31, %32)
+  %34 : Float(6, 7, 3) = onnx::ConstantOfShape[value={0}](%33), scope: RNN
+
 */
+
+//onnx::Slice[axes=[0], ends=[1], starts=[0]](%30), scope: AlexNet
+
   int collected = 0;
   for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
     c10::optional<at::Tensor> updatedValWrapped;
