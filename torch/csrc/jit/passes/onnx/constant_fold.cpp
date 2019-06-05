@@ -208,15 +208,15 @@ std::vector<Node*> getOnnxConstParentsToRemove(Node* node) {
 // Returns 1 if succeeded.
 int collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& removeNodes,
     std::vector<at::Tensor>& inputTensorValues) {
-  if (level > 10) {
-    return -1; // stack overflow
+  if (level > 3) {
+    return -1; // no deeper
   }
 
   std::cerr << "kind: " << node->kind().toDisplayString() << "  ";
   node->print(std::cerr, level, nullptr);
-//  if (node->kind() == prim::Param) {
-//    return -2;
-//  }
+  if (node->kind() == prim::Param) {
+    return -2;
+  }
 
   int ret = 0;
   if (node->kind() == onnx::Concat ||
@@ -235,7 +235,7 @@ int collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& rem
         if (name == attr::value && node->kindOf(name) == AttributeKind::t) {
           at::Tensor val = node->t(name).dim() == 0 ? node->t(name).unsqueeze(0) : node->t(name);
           std::cout << std::string(level, ' ') << val.toString() << " "
-          << val.sizes() << " : " << val.item().toLong() << std::endl;
+              << val.sizes() << " : " << val.item().toLong() << std::endl;
           inputTensorValues.push_back(val);
           ret = 1;
           break;
@@ -244,7 +244,7 @@ int collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& rem
     } else {
       for (auto inp : node->inputs()) {
         ret = collectFoldables(level + 1, inp->node(), removeNodes, inputTensorValues);
-        if (ret == 0) {
+        if (ret == 0 || ret == -2) {
           break;
         }
       }
@@ -293,6 +293,17 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
   %32 : Tensor = onnx::Unsqueeze[axes=[0]](%29)
   %33 : Tensor = onnx::Concat[axis=0](%30, %31, %32)
   %34 : Float(6, 7, 3) = onnx::ConstantOfShape[value={0}](%33), scope: RNN
+
+  %15 : Tensor = onnx::Transpose[perm=[1, 0, 2]](%input.1), scope: RnnModelWithPackedSequence
+  %21 : Tensor = onnx::Shape(%15)
+  %22 : Tensor = onnx::Constant[value={1}]()
+  %23 : Tensor = onnx::Gather(%21, %22)
+  %24 : Tensor = onnx::Unsqueeze[axes=[0]](%23)
+  %25 : Tensor = onnx::Constant[value={3}]()
+  %26 : Tensor = onnx::Constant[value={1}]()
+  %27 : Tensor = onnx::Unsqueeze[axes=[0]](%26)
+  %28 : Tensor = onnx::Concat[axis=0](%27, %24, %25)
+  %29 : Tensor = onnx::ConstantOfShape(%28)
 
 */
 
