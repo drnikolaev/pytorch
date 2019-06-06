@@ -205,20 +205,29 @@ std::vector<Node*> getOnnxConstParentsToRemove(Node* node) {
 
 // Recursive collector of a tree having Concat as a root and Constants as leaves.
 // With Unsqueeze, Gather and Shape only in between.
-// Returns 1 if succeeded.
-int collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& removeNodes,
+// Returns non-empty array if succeeded.
+std::vector<int64_t> collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& removeNodes,
     std::vector<at::Tensor>& inputTensorValues) {
-  if (level > 3) {
-    return -1; // no deeper
+  std::vector<int64_t> ret;
+  if (level > 4) {
+    return ret; // no deeper
   }
 
-  std::cerr << "kind: " << node->kind().toDisplayString() << "  ";
+//  std::cerr << "kind: " << node->kind().toDisplayString() << "  ";
   node->print(std::cerr, level, nullptr);
-  if (node->kind() == prim::Param) {
-    return -2;
-  }
+//  if (node->kind() == prim::Param) {
+//    return -2;
+//  }
 
-  int ret = 0;
+//    std::ostream& operator<<(std::ostream & out, const Type & t) {
+//      if(auto value = t.cast<CompleteTensorType>()) {
+//        out << toString(value->scalarType()) << "(";
+//        auto& sizes = value->sizes();
+//        auto& strides = value->strides();
+//        AT_ASSERT(sizes.size() == strides.size());
+//
+//      }
+
   if (node->kind() == onnx::Concat ||
       node->kind() == onnx::Unsqueeze ||
       node->kind() == onnx::Gather ||
@@ -230,27 +239,50 @@ int collectFoldables(int level, Node* node, std::vector<std::vector<Node*>>& rem
     removeNodes[level].emplace_back(node);
 
     if (node->kind() == onnx::Constant) {
-      auto names = node->attributeNames();
-      for (auto name : names) {
-        if (name == attr::value && node->kindOf(name) == AttributeKind::t) {
-          at::Tensor val = node->t(name).dim() == 0 ? node->t(name).unsqueeze(0) : node->t(name);
-          std::cout << std::string(level, ' ') << val.toString() << " "
-              << val.sizes() << " : " << val.item().toLong() << std::endl;
-          inputTensorValues.push_back(val);
-          ret = 1;
-          break;
+      if (node->hasAttribute(attr::value) &&
+          node->kindOf(attr::value) == AttributeKind::t) {
+        at::Tensor val = node->t(attr::value);
+        if (val.dim() == 0) {
+          val.unsqueeze_(0);
         }
+        std::cout << std::string(level, ' ') << val.toString() << " "
+            << val.sizes() << " : " << val.item().toLong() << std::endl;
+        inputTensorValues.push_back(val);
+        ret.emplace_back(val.item().to<int64_t>());
       }
-    } else {
-      for (auto inp : node->inputs()) {
-        ret = collectFoldables(level + 1, inp->node(), removeNodes, inputTensorValues);
-        if (ret == 0 || ret == -2) {
-          break;
-        }
+    } else if (node->kind() == onnx::Shape && node->inputs().size() == 1) {
+      auto inp = node->inputs()[0];
+      ret = collectFoldables(level + 1, inp->node(), removeNodes, inputTensorValues);
+      if (auto value = inp->type()->cast<CompleteTensorType>()) {
+        ret = value->sizes();
+      }
+    } else if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
+
+      if (node->hasAttribute(attr::axis)) { //} && node->kindOf(attr::axis) == AttributeKind::t)
+        at::Tensor val = node->t(attr::axis);
+        std::cout << std::string(level, ' ') << val.toString() << " "
+                  << val.sizes() << " : " << val.item().toLong() << std::endl;
+        inputTensorValues.push_back(val);
+        ret.emplace_back(val.item().to<int64_t>());
+      }
+
+      auto data = node->inputs()[0];
+      auto indx = node->inputs()[1];
+      auto dval = collectFoldables(level + 1, data->node(), removeNodes, inputTensorValues);
+      auto ival = collectFoldables(level + 1, indx->node(), removeNodes, inputTensorValues);
+      if(ival.size() == 1 && ival[0] < dval.size()) {
+        ret.emplace_back(dval[ival[0]]);
       }
     }
-  } else {
-    ret = -1;
+
+
+
+
+    else {
+      for (auto inp : node->inputs()) {
+        ret = collectFoldables(level + 1, inp->node(), removeNodes, inputTensorValues);
+      }
+    }
   }
   return ret;
 }
@@ -309,7 +341,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 
 //onnx::Slice[axes=[0], ends=[1], starts=[0]](%30), scope: AlexNet
 
-  int collected = 0;
+  std::vector<long int> collected;
   for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
     c10::optional<at::Tensor> updatedValWrapped;
     std::vector<at::Tensor> inputTensorValues;
@@ -317,35 +349,39 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     auto node = *it;
     if (node->kind() == onnx::Concat && node->hasUses()) {
       collected = collectFoldables(0, node, removeNodes, inputTensorValues);
-      if (collected == 1) {
-        updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
-        if (updatedValWrapped == c10::nullopt) {
-          // Constant folding is not supported for this op. Skip it.
-          collected = 0;
-          continue;
-        }
-        at::Tensor updatedVal = *updatedValWrapped;
-        Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
-        new_shape->t_(attr::value, updatedVal);
-        auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
-        newSourceNodeOutput->inferTypeFrom(updatedVal);
-        node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
-        node->removeAllInputs();
-        for (auto itn = removeNodes.begin(); itn != removeNodes.end(); ++itn) {
-          for (auto n : *itn) {
-            if(node != n) {
-              n->destroy();
-            }
-          }
-        }
-        it.destroyCurrent();
+
+      std::cout << collected << std::endl;
+
+
+//      if (collected == 1) {
+//        updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
+//        if (updatedValWrapped == c10::nullopt) {
+//          // Constant folding is not supported for this op. Skip it.
+//          collected = 0;
+//          continue;
+//        }
+//        at::Tensor updatedVal = *updatedValWrapped;
+//        Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
+//        new_shape->t_(attr::value, updatedVal);
+//        auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
+//        newSourceNodeOutput->inferTypeFrom(updatedVal);
+//        node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
+//        node->removeAllInputs();
+//        for (auto itn = removeNodes.begin(); itn != removeNodes.end(); ++itn) {
+//          for (auto n : *itn) {
+//            if(node != n) {
+//              n->destroy();
+//            }
+//          }
+//        }
+//        it.destroyCurrent();
       }
     }
   }
-  if (collected == 1) {
-    // std::cout << b->owningGraph()->toString() << std::endl;
-    return;
-  }
+//  if (collected == 1) {
+//    // std::cout << b->owningGraph()->toString() << std::endl;
+//    return;
+//  }
 
   // Default implementation
 //  auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
@@ -401,7 +437,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 //  eraseUnusedValuesFromMap(valsToParamsMap);
 //  eraseUnusedBlockInputs(b);
 //  buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
-}
+//}
 
 } // namespace jit
 } // namespace torch
