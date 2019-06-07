@@ -1,8 +1,9 @@
-#include <torch/csrc/jit/passes/onnx/constant_fold.h>
+#include <torch/include/ATen/NativeFunctions.h>
+#include <ATen/native/TensorFactories.h>
 #include <c10/util/Exception.h>
 #include <c10/util/Optional.h>
+#include <torch/csrc/jit/passes/onnx/constant_fold.h>
 #include <algorithm>
-#include <ATen/native/TensorFactories.h>
 
 namespace torch {
 namespace jit {
@@ -225,12 +226,9 @@ std::vector<int64_t> collectFoldables(int level, Node* node,
     if (node->hasAttribute(attr::value) &&
         node->kindOf(attr::value) == AttributeKind::t) {
       at::Tensor val = node->t(attr::value);
-      if (val.dim() == 0) {
-        val.unsqueeze_(0);
-      }
 //      std::cout << std::string(level, ' ') << val.toString() << " "
 //          << val.sizes() << " : " << val.item().toLong() << std::endl;
-      ret.emplace_back(val.item().to<int64_t>());
+      ret.emplace_back(val.item().toLong());
     }
   } else if (node->kind() == onnx::Shape && node->inputs().size() == 1) {
     auto inp = node->inputs()[0];
@@ -278,48 +276,128 @@ std::vector<int64_t> collectFoldables(int level, Node* node,
 // constant-based computations/ops into an initializer node.
 void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
   AT_ASSERT(b->param_node());
-/*
- * We can do better for *static* cases like this:
- *
-  %30 : Float(2, 256, 6, 6) = onnx::AveragePool[kernel_shape=[1, 1], strides=[1, 1]](%29), scope:
-  %31 : Long() = onnx::Constant[value={2}](), scope:
-  %32 : Long() = onnx::Constant[value={9216}](), scope:
-  %33 : Tensor = onnx::Unsqueeze[axes=[0]](%31)
-  %34 : Tensor = onnx::Unsqueeze[axes=[0]](%32)
-  %35 : Tensor = onnx::Concat[axis=0](%33, %34)
-  %36 : Float(2, 9216) = onnx::Reshape(%30, %35), scope:
-*/
-//onnx::Slice[axes=[0], ends=[1], starts=[0]](%30), scope: AlexNet
+  /*
+   * We can do better for *static* cases like this:
+   *
+    %30 : Float(2, 256, 6, 6) = onnx::AveragePool[kernel_shape=[1, 1],
+   strides=[1, 1]](%29), scope: %31 : Long() = onnx::Constant[value={2}](),
+   scope: %32 : Long() = onnx::Constant[value={9216}](), scope: %33 : Tensor =
+   onnx::Unsqueeze[axes=[0]](%31) %34 : Tensor = onnx::Unsqueeze[axes=[0]](%32)
+    %35 : Tensor = onnx::Concat[axis=0](%33, %34)
+    %36 : Float(2, 9216) = onnx::Reshape(%30, %35), scope:
+  */
 
-  std::vector<long int> values;
-  for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
-    std::vector<std::vector<Node*>> removeNodes;
-    auto node = *it;
-    if (node->kind() == onnx::Concat && node->hasUses()) {
-      values = collectFoldables(0, node, removeNodes);
-      if (!values.empty()) {
-        at::Tensor updatedVal = at::native::tensor(values,
-            at::TensorOptions().
-            device(at::kCPU).dtype(at::kLong).layout(at::kStrided).is_variable(true));
-        Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
-        new_shape->t_(attr::value, updatedVal);
-        auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
-        newSourceNodeOutput->inferTypeFrom(updatedVal);
-        node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
-        node->removeAllInputs();
-        for (auto itn = removeNodes.begin(); itn != removeNodes.end(); ++itn) {
-          for (auto n : *itn) {
-            if (node != n) {
-              n->destroy();
+//    for (auto a : paramsDict) {
+//      std::cout << std::string(0, ' ') << a.first << " : " << a.second.toString() << " "
+//          << a.second.sizes() << " : " << a.second.data<float>()[0] << std::endl;
+//    }
+
+  /*
+    std::vector<long int> values;
+    for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it)
+    { std::vector<std::vector<Node*>> removeNodes; auto node = *it; if
+    (node->kind() == onnx::Concat && node->hasUses()) { values =
+    collectFoldables(0, node, removeNodes); if (!values.empty()) { at::Tensor
+    updatedVal = at::native::tensor(values, at::TensorOptions().
+              device(at::kCPU).dtype(at::kLong).layout(at::kStrided).is_variable(true));
+          Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
+          new_shape->t_(attr::value, updatedVal);
+          auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
+          newSourceNodeOutput->inferTypeFrom(updatedVal);
+          node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
+          node->removeAllInputs();
+          for (auto itn = removeNodes.begin(); itn != removeNodes.end(); ++itn)
+    { for (auto n : *itn) { if (node != n) { n->destroy();
+              }
+            }
+          }
+          it.destroyCurrent();
+        }
+      }
+    }
+    */
+
+//  auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
+
+  bool processed;
+  auto itCurr = b->nodes().begin(), end = b->nodes().end();
+  do {
+    processed = false;
+    std::vector<long int> values;
+//    std::vector<Node*> removeNodes;
+    for (auto it = itCurr; it != end; ++it) {
+      auto node = *it;
+      if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
+        int64_t axis = 0LL;
+        if (node->hasAttribute(attr::axis) &&
+            node->kindOf(attr::axis) == AttributeKind::i) {
+          axis = node->i(attr::axis);
+        }
+        if (axis == 0LL) {
+          auto data = node->inputs()[0];
+          auto indx = node->inputs()[1];
+          auto indxNode = indx->node();
+          if (indxNode->kind() == onnx::Constant) {
+            if (indxNode->hasAttribute(attr::value) &&
+                indxNode->kindOf(attr::value) == AttributeKind::t) {
+              const at::Tensor& idxValT = indxNode->t(attr::value);
+              int64_t idxVal = idxValT.data<int64_t>()[0];
+              //            std::cout << std::string(10, ' ') << idxValT.toString() << " "
+              //                      << idxValT.sizes() << " : " << idxValT.item().toLong()
+              //                      << std::endl;
+
+
+              Node* sliceNode = b->owningGraph()->create(onnx::Slice, 1);
+              sliceNode->is_(attr::axes, {axis});
+              sliceNode->is_(attr::starts, {idxVal});
+              sliceNode->is_(attr::ends, {idxVal + 1LL});
+              sliceNode->insertInput(0, data);
+
+//              Node* sliceNode = b->owningGraph()->create(onnx::Gather, 1);
+//              sliceNode->insertInput(0, data);
+//              sliceNode->insertInput(1, indx);
+
+
+              auto sliceNodeOutput = sliceNode->insertAfter(node)->output();
+              //            valsToParamsMap.insert(
+              //                {sliceNodeOutput,
+              //                 std::make_pair(sliceNodeOutput->uniqueName(), idxValT)});
+
+              sliceNodeOutput->setType(node->output()->type());
+              node->outputs().at(0)->replaceAllUsesWith(sliceNodeOutput);
+              node->removeAllInputs();
+              // it.destroyCurrent();
+//                          removeNodes.emplace_back(indxNode);
+              //            removeNodes.emplace_back(node);
+
+              //            node->destroy();
+              //            eraseUnusedValuesFromMap(valsToParamsMap);
+              //            eraseUnusedBlockInputs(b);
+              //            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
+
+              //            for (auto a : paramsDict) {
+              //              std::cerr << std::string(0, ' ') << a.first << " : " << a.second.toString() << " "
+              //                        << a.second.sizes() << " : " << a.second.data<float>()[0] << std::endl;
+              //            }
+
+              itCurr = it;
+              ++itCurr;
+
+              indxNode->destroy();
+              it.destroyCurrent();
+
+              processed = true;
+              break;
             }
           }
         }
-        it.destroyCurrent();
       }
     }
-  }
+//    for (auto n : removeNodes) {
+//      n->destroy();
+//    }
+  } while (processed);
 }
-
 
 // Default implementation
 //  auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
