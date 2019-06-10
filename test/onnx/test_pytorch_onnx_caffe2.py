@@ -201,8 +201,7 @@ class TestCaffe2Backend(unittest.TestCase):
                                  do_constant_folding=do_constant_folding)
         else:
             self.run_debug_test(model, train, batch_size, state_dict, input,
-                                use_gpu=use_gpu_, example_outputs=example_outputs,
-                                do_constant_folding=do_constant_folding)
+                                use_gpu=use_gpu_, example_outputs=example_outputs)
 
     def test_linear(self):
         class MyModel(torch.nn.Module):
@@ -432,12 +431,12 @@ class TestCaffe2Backend(unittest.TestCase):
             assert len(prepared.init_net.op) == 875
             assert len(prepared.predict_net.op) == 130
         else:
-            assert len(prepared.init_net.op) == 8
-            assert len(prepared.predict_net.op) == 997
+            assert len(prepared.init_net.op) == 7
+            assert len(prepared.predict_net.op) == 1006
 
     def test_alexnet(self):
         state_dict = model_zoo.load_url(model_urls['alexnet'], progress=False)
-        self.run_model_test(alexnet(), train=False, batch_size=BATCH_SIZE,
+        self.run_model_test(alexnet(), train=False, batch_size=BATCH_SIZE, use_gpu=False,
                             state_dict=state_dict, atol=1e-3)
 
     @skipIfNoCuda
@@ -1250,6 +1249,7 @@ class TestCaffe2Backend(unittest.TestCase):
         x = torch.randn(3, 4)
         self.run_model_test(WhereMethod(), train=False, input=(x,), batch_size=BATCH_SIZE, use_gpu=False)
 
+    @skip
     def test_data_dependent_zeros_factory(self):
         class ZerosFactory(torch.nn.Module):
             def forward(self, input):

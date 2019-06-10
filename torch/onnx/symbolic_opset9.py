@@ -288,7 +288,48 @@ def size(g, self, dim):
     #     dim_val = _parse_arg(dim, 'i')
     #     return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
     full_shape = g.op("Shape", self)
-    return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
+    print(full_shape.type())
+    # return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
+    # dim_val = _parse_arg(dim, 'i')
+    # return select(g, full_shape, 0, dim_val, dim_val + 1)
+
+    # index_val = 0
+    # end_val = 1
+    # slice_node = _slice_op(g, self, axes=[dim],
+    #                        starts=[index_val], ends=[end_val])
+
+    # slice_node = g.op("Slice", full_shape, axes_i=[dim], starts_i=[index_val], ends_i=[end_val])
+
+    # return g.op("Squeeze", slice_node, axes_i=[dim]) # if dim > 0 else slice_node
+    # return slice(g, full_shape, torch.LongTensor(dim), torch.LongTensor([0]),
+    #              torch.LongTensor([1]), 1)
+    # return _slice_op(g, full_shape, axes=[dim], starts=[0], ends=[1])
+
+    slice_node = narrow(g, full_shape, dim, 0, 1) #g.op("Slice", full_shape, axes_i=[dim], starts_i=[0], ends_i=[1])
+    print(slice_node.type())
+    return slice_node
+
+    # return narrow(g, full_shape, dim, 0, 1)
+
+
+
+# def slice(g, self, dim, start, end, step):
+#     if step != 1:
+#         _unimplemented("slice", "step!=1 is currently not supported")
+#     if start.node().kind() != 'onnx::Constant' or \
+#             end.node().kind() != 'onnx::Constant' or dim.node().kind() != 'onnx::Constant':
+#         start_unsqueezed = g.op("Unsqueeze", start, axes_i=[0])
+#         end_unsqueezed = g.op("Unsqueeze", end, axes_i=[0])
+#         dim_unsqueezed = g.op("Unsqueeze", dim, axes_i=[0])
+#         return g.op("DynamicSlice", self, start_unsqueezed, end_unsqueezed, dim_unsqueezed)
+#     else:
+#         start = _parse_arg(start, 'i')
+#         end = _parse_arg(end, 'i')
+#         dim = _parse_arg(dim, 'i')
+#         return _slice_op(g, self, axes=[dim], starts=[start], ends=[end])
+
+
+
 
 
 @parse_args('v', 'i', 'i')
@@ -372,6 +413,22 @@ def select(g, self, dim, index):
         return g.op("Squeeze", slice_node, axes_i=[dim])
     else:
         return g.op("Gather", self, index, axis_i=dim)
+#
+#     # if dim > -1:
+#     # TODO: this is a temporary hack because of the implementation details
+#     # of Gather in caffe2. We need to change this as soon as possible.
+#     # TODO: this breaks if index == -1
+#     index_val = _parse_arg(index, 'i')
+#     end_val = index_val + 1 if index_val >= 0 else index_val + self.type().sizes()[dim]
+#     # slice_node = _slice_op(g, self, axes=[dim],
+#     #                        starts=[index_val], ends=[end_val])
+#
+#     slice_node = g.op("Slice", self, axes_i=[dim], starts_i=[index_val], ends_i=[end_val])
+#
+#     return g.op("Squeeze", slice_node, axes_i=[dim]) if dim > 0 else slice_node;
+#     # else:
+#     #     return g.op("Gather", self, index, axis_i=dim)
+# #        return g.op('Slice', self, axes_i=[dim], starts_i=[index], ends_i=[indexEnd])
 
 
 def squeeze(g, self, dim=None):

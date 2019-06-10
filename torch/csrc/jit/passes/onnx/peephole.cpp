@@ -373,21 +373,29 @@ void fixDefaultRNNState(Graph* graph, Node* n, int input_index) {
   shape_of_input->insertBefore(n);
   shape_of_input->addInput(n->inputs()[0]);
 
-  Node* gather_indices = graph->create(onnx::Constant, 1);
-  gather_indices->insertBefore(n);
-  gather_indices->t_(
-      attr::value,
-      autograd::make_variable(at::scalar_to_tensor(at::Scalar(1))));
+//  Node* gather_indices = graph->create(onnx::Constant, 1);
+//  gather_indices->insertBefore(n);
+//  gather_indices->t_(
+//      attr::value,
+//      autograd::make_variable(at::scalar_to_tensor(at::Scalar(1))));
+//
+//  Node* batch_size = graph->create(onnx::Gather, 1);
+//  batch_size->insertBefore(n);
+//  batch_size->addInput(shape_of_input->outputs()[0]);
+//  batch_size->addInput(gather_indices->outputs()[0]);
 
-  Node* batch_size = graph->create(onnx::Gather, 1);
+
+  Node* batch_size = graph->create(onnx::Slice, 1);
   batch_size->insertBefore(n);
   batch_size->addInput(shape_of_input->outputs()[0]);
-  batch_size->addInput(gather_indices->outputs()[0]);
+  batch_size->is_(attr::axes, {0});
+  batch_size->is_(attr::starts, {1L});
+  batch_size->is_(attr::ends, {2L});
 
-  Node* unsqueezed_batch_size = graph->create(onnx::Unsqueeze, 1);
-  unsqueezed_batch_size->insertBefore(n);
-  unsqueezed_batch_size->addInput(batch_size->outputs()[0]);
-  unsqueezed_batch_size->is_(attr::axes, {0});
+//  Node* unsqueezed_batch_size = graph->create(onnx::Unsqueeze, 1);
+//  unsqueezed_batch_size->insertBefore(n);
+//  unsqueezed_batch_size->addInput(batch_size->outputs()[0]);
+//  unsqueezed_batch_size->is_(attr::axes, {0});
 
   Node* hidden_size = graph->create(onnx::Constant, 1);
   hidden_size->insertBefore(n);
@@ -417,7 +425,8 @@ void fixDefaultRNNState(Graph* graph, Node* n, int input_index) {
   concated_dims->insertBefore(n);
   concated_dims->i_(attr::axis, 0);
   concated_dims->addInput(unsqueezed_num_directions->outputs()[0]);
-  concated_dims->addInput(unsqueezed_batch_size->outputs()[0]);
+//  concated_dims->addInput(unsqueezed_batch_size->outputs()[0]);
+  concated_dims->addInput(batch_size->outputs()[0]);
   concated_dims->addInput(hidden_size->outputs()[0]);
 
   Node* constant_of_shape = graph->create(onnx::ConstantOfShape, 1);
@@ -523,22 +532,47 @@ static void eraseListConstruct(Block* block) {
         auto* lc_node = input->node();
         TypePtr elem =
             lc_node->output()->type()->cast<ListType>()->getElementType();
+
+//////        c10::IntType* ee = elem->cast<IntType>().get();
+//        std::cout << *ee                  << std::endl;
+
         if (elem->cast<IntType>()) {
           // ListConstruct Int[] output case, we need to transfrom to ONNX
           // Concat to ensure the output is a single tensor(dynamic) type in
           // order to be consumed as inputs
           std::vector<Value*> unsqueezed;
           Graph* g = block->owningGraph();
-          for (auto* input : lc_node->inputs()) {
-            Node* unsqueezed_node = g->create(onnx::Unsqueeze, 1);
-            unsqueezed_node->insertBefore(lc_node);
-            unsqueezed_node->addInput(input);
-            unsqueezed_node->is_(attr::axes, {0});
-            unsqueezed.emplace_back(unsqueezed_node->output());
+          for (int k = 0; k < lc_node->inputs().size(); ++k) {
+
+            auto* lcinput = lc_node->inputs()[k];
+
+//            auto s = lcinput->type()
+//                ->expect<OptionalType>();
+////                ->sizes();
+//            std::cerr << s->str() << std::endl;
+
+            //            at::Tensor* t = reinterpret_cast<at::Tensor*>(input->type().get());
+//            std::cout << std::string(10, ' ') //<< //idxValT.toString() << " "
+//                      << t->sizes() << " : " << t->data<long>()[0]
+//                      << std::endl;
+
+//            if (k == 1) {
+              Node* unsqueezed_node = g->create(onnx::Unsqueeze, 1);
+              unsqueezed_node->insertBefore(lc_node);
+              unsqueezed_node->addInput(lcinput);
+              unsqueezed_node->is_(attr::axes, {0});
+              unsqueezed.emplace_back(unsqueezed_node->output());
+//            } else {
+//              unsqueezed.emplace_back(lc_node->output());
+//
+//            }
           }
           Node* concat_node = g->create(onnx::Concat, 1);
           concat_node->i_(attr::axis, 0);
           for (auto v : unsqueezed) {
+
+            std::cerr << v->type()->str() << std::endl;
+
             concat_node->addInput(v);
           }
           concat_node->insertBefore(lc_node);

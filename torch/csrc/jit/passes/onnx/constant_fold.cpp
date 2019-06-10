@@ -232,6 +232,14 @@ std::vector<int64_t> collectFoldables(int level, Node* node,
     }
   } else if (node->kind() == onnx::Shape && node->inputs().size() == 1) {
     auto inp = node->inputs()[0];
+    auto ginps = node->owningGraph()->inputs();
+    for (auto ginp : ginps) {
+      if (inp == ginp) {
+        std::string used = inp->uniqueName();
+        std::cerr << used << " =======================================\n";
+        return ret;
+      }
+    }
     if (auto value = inp->type()->cast<CompleteTensorType>()) {
       ret = value->sizes();
     }
@@ -254,6 +262,34 @@ std::vector<int64_t> collectFoldables(int level, Node* node,
       auto ival = collectFoldables(level + 1, indx->node(), removeNodes);
       if(ival.size() == 1 && ival[0] < dval.size()) {
         ret.emplace_back(dval[ival[0]]);
+      }
+    }
+  } else if (node->kind() == onnx::Slice && node->inputs().size() == 1) {
+    int64_t axis = 0LL;
+    if (node->hasAttribute(attr::axes) && node->kindOf(attr::axes) == AttributeKind::is) {
+      axis = node->is(attr::axes)[0];
+    }
+    if (axis == 0L) {
+      auto data = node->inputs()[0];
+      auto dval = collectFoldables(level + 1, data->node(), removeNodes);
+      if (dval.size() > 0 &&
+          node->hasAttribute(attr::ends) && node->kindOf(attr::ends) == AttributeKind::is &&
+          node->is(attr::ends).size() == 1) {
+        int64_t end = node->is(attr::ends)[0];
+        if (end <= 0L) {
+          end += dval.size();
+        }
+        int64_t start = 0L;
+        if (node->hasAttribute(attr::starts) && node->kindOf(attr::starts) == AttributeKind::is &&
+            node->is(attr::starts).size() == 1) {
+          start = node->is(attr::starts)[0];
+          if (start < 0L) {
+            start += dval.size();
+          }
+        }
+        for (int64_t i = start; i < end; ++i) {
+          ret.emplace_back(dval[i]);
+        }
       }
     }
   } else if (node->kind() == onnx::Concat && !node->inputs().empty()) {
@@ -291,6 +327,34 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 //      std::cout << std::string(0, ' ') << a.first << " : " << a.second.toString() << " "
 //          << a.second.sizes() << " : " << a.second.data<float>()[0] << std::endl;
 //    }
+
+  std::vector<long int> values;
+  for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
+    std::vector<std::vector<Node*>> removeNodes;
+    auto node = *it;
+    if (node->kind() == onnx::Concat && node->hasUses()) {
+      values = collectFoldables(0, node, removeNodes);
+      if (!values.empty()) {
+        at::Tensor updatedVal = at::native::tensor(values,
+            at::TensorOptions().device(at::kCPU).dtype(at::kLong).layout(at::kStrided).is_variable(
+                true));
+        Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
+        new_shape->t_(attr::value, updatedVal);
+        auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
+        newSourceNodeOutput->inferTypeFrom(updatedVal);
+        node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
+        node->removeAllInputs();
+        for (auto itn = removeNodes.begin(); itn != removeNodes.end(); ++itn) {
+          for (auto n : *itn) {
+            if (node != n) {
+              n->destroy();
+            }
+          }
+        }
+        it.destroyCurrent();
+      }
+    }
+  }
 
   /*
     std::vector<long int> values;
@@ -342,16 +406,43 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
                 indxNode->kindOf(attr::value) == AttributeKind::t) {
               const at::Tensor& idxValT = indxNode->t(attr::value);
               int64_t idxVal = idxValT.data<int64_t>()[0];
-              //            std::cout << std::string(10, ' ') << idxValT.toString() << " "
+              int64_t endVal = idxVal + 1L;
+
+//              auto inp = node->inputs()[0];
+
+              auto szs = data->type()->cast<CompleteTensorType>()->sizes();
+              //std::vector<long> szs1(szs.begin()+1, szs.end());
+   //           data->toTensor();
+              if (endVal <= 0) {
+                endVal += szs[axis];
+              }
+              szs[0] = 1;
+
+
+            //  static CompleteTensorTypePtr create(at::ScalarType scalar_type, at::Device device, at::IntArrayRef sizes) {
+
+                //            std::cout << std::string(10, ' ') << idxValT.toString() << " "
               //                      << idxValT.sizes() << " : " << idxValT.item().toLong()
               //                      << std::endl;
+
+//              at::Tensor dummy = at::native::tensor(ArrayRef<int64_t>(szs), at::TensorOptions().
+//                  device(at::kCPU).dtype(at::kFloat).layout(at::kStrided).is_variable(true));
+//
+//       dummy.unsqueeze_(0);
+//              dummy.unsqueeze_(0);
 
 
               Node* sliceNode = b->owningGraph()->create(onnx::Slice, 1);
               sliceNode->is_(attr::axes, {axis});
               sliceNode->is_(attr::starts, {idxVal});
-              sliceNode->is_(attr::ends, {idxVal + 1LL});
+              sliceNode->is_(attr::ends, {endVal});
               sliceNode->insertInput(0, data);
+
+        sliceNode->output()->setType(CompleteTensorType::create(
+            at::kFloat,
+            at::kCPU,
+            szs));
+//              ../aten/src/ATen/core/jit_type.h:387:3: note: candidate: c10::DimensionedTensorType::DimensionedTensorType(c10::ScalarType, c10::Device, int64_t, bool, c10::TypeKind)
 
 //              Node* sliceNode = b->owningGraph()->create(onnx::Gather, 1);
 //              sliceNode->insertInput(0, data);
@@ -363,8 +454,23 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
               //                {sliceNodeOutput,
               //                 std::make_pair(sliceNodeOutput->uniqueName(), idxValT)});
 
-              sliceNodeOutput->setType(node->output()->type());
-              node->outputs().at(0)->replaceAllUsesWith(sliceNodeOutput);
+//              sliceNodeOutput->inferTypeFrom(dummy);
+
+//              sliceNodeOutput->setType(node->output()->type());
+
+
+              Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
+              squeezeNode->insertInput(0, sliceNodeOutput);
+              squeezeNode->is_(attr::axes, {axis});
+              auto squezeNodeOutput = squeezeNode->insertAfter(sliceNode)->output();
+
+              std::vector<long> szs1(szs.begin()+1, szs.end());
+              squeezeNode->output()->setType(CompleteTensorType::create(
+                  at::kFloat,
+                  at::kCPU,
+                  szs1));
+
+              node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
               node->removeAllInputs();
               // it.destroyCurrent();
 //                          removeNodes.emplace_back(indxNode);
@@ -379,6 +485,8 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
               //              std::cerr << std::string(0, ' ') << a.first << " : " << a.second.toString() << " "
               //                        << a.second.sizes() << " : " << a.second.data<float>()[0] << std::endl;
               //            }
+
+
 
               itCurr = it;
               ++itCurr;

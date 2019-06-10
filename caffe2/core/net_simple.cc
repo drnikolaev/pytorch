@@ -51,8 +51,8 @@ bool SimpleNet::Run() {
   StartAllObservers();
   VLOG(1) << "Running net " << name_;
   for (auto& op : operators_) {
-    VLOG(1) << "Running operator " << op->debug_def().name() << "("
-            << op->debug_def().type() << ").";
+    std::cerr << "Running operator " << op->debug_def().name() << "("
+            << op->debug_def().type() << ").\n";
 #ifdef CAFFE2_ENABLE_SDT
     const auto& op_name = op->debug_def().name().c_str();
     const auto& op_type = op->debug_def().type().c_str();
