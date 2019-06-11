@@ -204,10 +204,27 @@ std::vector<Node*> getOnnxConstParentsToRemove(Node* node) {
 } // Anonymous namespace
 
 
+bool isDynamic(int axis, const Node* node, const Graph* graph) {
+  if (node == nullptr || axis >= node->inputs().size()) {
+    return false;
+  }
+  auto inp = node->inputs()[axis];
+  auto ginps = graph->inputs();
+  for (auto ginp : ginps) {
+    if (inp == ginp) {
+      return true;
+    }
+  }
+  if (isDynamic(axis, inp->node(), graph)) {
+    return true;
+  }
+  return false;
+}
+
 // Recursive collector of a tree having Concat as a root and Constants as leaves.
 // With Unsqueeze, Gather and Shape only in between.
 // Returns non-empty array if succeeded.
-std::vector<int64_t> collectFoldables(int level, Node* node,
+std::vector<int64_t> collectFoldables(int& axis, int level, Node* node,
     std::vector<std::vector<Node*>>& removeNodes) {
   std::vector<int64_t> ret;
   if (level > 4) {
@@ -225,29 +242,29 @@ std::vector<int64_t> collectFoldables(int level, Node* node,
   if (node->kind() == onnx::Constant) {
     if (node->hasAttribute(attr::value) &&
         node->kindOf(attr::value) == AttributeKind::t) {
-      at::Tensor val = node->t(attr::value);
+      const at::Tensor& val = node->t(attr::value);
 //      std::cout << std::string(level, ' ') << val.toString() << " "
 //          << val.sizes() << " : " << val.item().toLong() << std::endl;
       ret.emplace_back(val.item().toLong());
     }
   } else if (node->kind() == onnx::Shape && node->inputs().size() == 1) {
-    auto inp = node->inputs()[0];
-    auto ginps = node->owningGraph()->inputs();
-    for (auto ginp : ginps) {
-      if (inp == ginp) {
-        std::string used = inp->uniqueName();
-        std::cerr << used << " =======================================\n";
+//    auto inp = node->inputs()[0];
+//    auto ginps = node->owningGraph()->inputs();
+    if (isDynamic(axis, node, node->owningGraph())) {
+//      if (inp == ginp) {
+//        std::string used = inp->uniqueName();
+        std::cerr << " =======================================\n";
         return ret;
-      }
+//      }
     }
-    if (auto value = inp->type()->cast<CompleteTensorType>()) {
+    if (auto value = node->inputs()[0]->type()->cast<CompleteTensorType>()) {
       ret = value->sizes();
     }
   } else if (node->kind() == onnx::Unsqueeze && node->inputs().size() == 1) {
     auto inp = node->inputs()[0];
-    return collectFoldables(level + 1, inp->node(), removeNodes);
+    return collectFoldables(axis, level + 1, inp->node(), removeNodes);
   } else if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
-    int64_t axis = 0LL;
+    axis = 0LL;
     if (node->hasAttribute(attr::axis) && node->kindOf(attr::axis) == AttributeKind::i) {
       axis = node->i(attr::axis);
 //        std::cout << std::string(level, ' ') << val.toString() << " "
@@ -255,24 +272,22 @@ std::vector<int64_t> collectFoldables(int level, Node* node,
 //        inputTensorValues.push_back(val);
 //        axis = val.item().to<int64_t>();
     }
-    if (axis == 0LL) {
-      auto data = node->inputs()[0];
-      auto indx = node->inputs()[1];
-      auto dval = collectFoldables(level + 1, data->node(), removeNodes);
-      auto ival = collectFoldables(level + 1, indx->node(), removeNodes);
-      if(ival.size() == 1 && ival[0] < dval.size()) {
-        ret.emplace_back(dval[ival[0]]);
-      }
+    auto data = node->inputs()[0];
+    auto indx = node->inputs()[1];
+    auto dval = collectFoldables(axis, level + 1, data->node(), removeNodes);
+    auto ival = collectFoldables(axis, level + 1, indx->node(), removeNodes);
+    if(ival.size() == 1 && ival[axis] < dval.size()) {
+      ret.emplace_back(dval[ival[axis]]);
     }
   } else if (node->kind() == onnx::Slice && node->inputs().size() == 1) {
-    int64_t axis = 0LL;
+    axis = 0LL;
     if (node->hasAttribute(attr::axes) && node->kindOf(attr::axes) == AttributeKind::is) {
       axis = node->is(attr::axes)[0];
     }
     if (axis == 0L) {
       auto data = node->inputs()[0];
-      auto dval = collectFoldables(level + 1, data->node(), removeNodes);
-      if (dval.size() > 0 &&
+      auto dval = collectFoldables(axis, level + 1, data->node(), removeNodes);
+      if (!dval.empty() &&
           node->hasAttribute(attr::ends) && node->kindOf(attr::ends) == AttributeKind::is &&
           node->is(attr::ends).size() == 1) {
         int64_t end = node->is(attr::ends)[0];
@@ -294,7 +309,7 @@ std::vector<int64_t> collectFoldables(int level, Node* node,
     }
   } else if (node->kind() == onnx::Concat && !node->inputs().empty()) {
     for (auto inp : node->inputs()) {
-      auto inpVal = collectFoldables(level + 1, inp->node(), removeNodes);
+      auto inpVal = collectFoldables(axis, level + 1, inp->node(), removeNodes);
       if (inpVal.size() == 1) {
         ret.emplace_back(inpVal[0]);
       } else {
@@ -328,12 +343,13 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 //          << a.second.sizes() << " : " << a.second.data<float>()[0] << std::endl;
 //    }
 
+  int axis = 0;
   std::vector<long int> values;
   for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
     std::vector<std::vector<Node*>> removeNodes;
     auto node = *it;
     if (node->kind() == onnx::Concat && node->hasUses()) {
-      values = collectFoldables(0, node, removeNodes);
+      values = collectFoldables(axis, 0, node, removeNodes);
       if (!values.empty()) {
         at::Tensor updatedVal = at::native::tensor(values,
             at::TensorOptions().device(at::kCPU).dtype(at::kLong).layout(at::kStrided).is_variable(
@@ -392,38 +408,37 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     for (auto it = itCurr; it != end; ++it) {
       auto node = *it;
       if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
-        int64_t axis = 0LL;
+        axis = 0LL;
         if (node->hasAttribute(attr::axis) &&
             node->kindOf(attr::axis) == AttributeKind::i) {
           axis = node->i(attr::axis);
         }
-        if (axis == 0LL) {
-          auto data = node->inputs()[0];
-          auto indx = node->inputs()[1];
-          auto indxNode = indx->node();
-          if (indxNode->kind() == onnx::Constant) {
-            if (indxNode->hasAttribute(attr::value) &&
-                indxNode->kindOf(attr::value) == AttributeKind::t) {
-              const at::Tensor& idxValT = indxNode->t(attr::value);
-              int64_t idxVal = idxValT.data<int64_t>()[0];
-              int64_t endVal = idxVal + 1L;
+        auto data = node->inputs()[0];
+        auto indx = node->inputs()[1];
+        auto indxNode = indx->node();
+        if (indxNode->kind() == onnx::Constant) {
+          if (indxNode->hasAttribute(attr::value) &&
+              indxNode->kindOf(attr::value) == AttributeKind::t) {
+            const at::Tensor& idxValT = indxNode->t(attr::value);
+            int64_t idxVal = idxValT.data<int64_t>()[0];
+            int64_t endVal = idxVal + 1L;
 
 //              auto inp = node->inputs()[0];
 
-              auto szs = data->type()->cast<CompleteTensorType>()->sizes();
-              //std::vector<long> szs1(szs.begin()+1, szs.end());
-   //           data->toTensor();
-              if (endVal <= 0) {
-                endVal += szs[axis];
-              }
-              szs[0] = 1;
+            auto szs = data->type()->cast<CompleteTensorType>()->sizes();
+            //std::vector<long> szs1(szs.begin()+1, szs.end());
+ //           data->toTensor();
+            if (endVal <= 0) {
+              endVal += szs[axis];
+            }
+            szs[0] = 1;
 
 
-            //  static CompleteTensorTypePtr create(at::ScalarType scalar_type, at::Device device, at::IntArrayRef sizes) {
+          //  static CompleteTensorTypePtr create(at::ScalarType scalar_type, at::Device device, at::IntArrayRef sizes) {
 
-                //            std::cout << std::string(10, ' ') << idxValT.toString() << " "
-              //                      << idxValT.sizes() << " : " << idxValT.item().toLong()
-              //                      << std::endl;
+              //            std::cout << std::string(10, ' ') << idxValT.toString() << " "
+            //                      << idxValT.sizes() << " : " << idxValT.item().toLong()
+            //                      << std::endl;
 
 //              at::Tensor dummy = at::native::tensor(ArrayRef<int64_t>(szs), at::TensorOptions().
 //                  device(at::kCPU).dtype(at::kFloat).layout(at::kStrided).is_variable(true));
@@ -432,16 +447,16 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 //              dummy.unsqueeze_(0);
 
 
-              Node* sliceNode = b->owningGraph()->create(onnx::Slice, 1);
-              sliceNode->is_(attr::axes, {axis});
-              sliceNode->is_(attr::starts, {idxVal});
-              sliceNode->is_(attr::ends, {endVal});
-              sliceNode->insertInput(0, data);
+            Node* sliceNode = b->owningGraph()->create(onnx::Slice, 1);
+            sliceNode->is_(attr::axes, {axis});
+            sliceNode->is_(attr::starts, {idxVal});
+            sliceNode->is_(attr::ends, {endVal});
+            sliceNode->insertInput(0, data);
 
-        sliceNode->output()->setType(CompleteTensorType::create(
-            at::kFloat,
-            at::kCPU,
-            szs));
+      sliceNode->output()->setType(CompleteTensorType::create(
+          at::kFloat,
+          at::kCPU,
+          szs));
 //              ../aten/src/ATen/core/jit_type.h:387:3: note: candidate: c10::DimensionedTensorType::DimensionedTensorType(c10::ScalarType, c10::Device, int64_t, bool, c10::TypeKind)
 
 //              Node* sliceNode = b->owningGraph()->create(onnx::Gather, 1);
@@ -449,57 +464,105 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 //              sliceNode->insertInput(1, indx);
 
 
-              auto sliceNodeOutput = sliceNode->insertAfter(node)->output();
-              //            valsToParamsMap.insert(
-              //                {sliceNodeOutput,
-              //                 std::make_pair(sliceNodeOutput->uniqueName(), idxValT)});
+            auto sliceNodeOutput = sliceNode->insertAfter(node)->output();
+            //            valsToParamsMap.insert(
+            //                {sliceNodeOutput,
+            //                 std::make_pair(sliceNodeOutput->uniqueName(), idxValT)});
 
 //              sliceNodeOutput->inferTypeFrom(dummy);
 
 //              sliceNodeOutput->setType(node->output()->type());
 
 
-              Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
-              squeezeNode->insertInput(0, sliceNodeOutput);
-              squeezeNode->is_(attr::axes, {axis});
-              auto squezeNodeOutput = squeezeNode->insertAfter(sliceNode)->output();
+            Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
+            squeezeNode->insertInput(0, sliceNodeOutput);
+            squeezeNode->is_(attr::axes, {axis});
+            auto squezeNodeOutput = squeezeNode->insertAfter(sliceNode)->output();
 
-              std::vector<long> szs1(szs.begin()+1, szs.end());
-              squeezeNode->output()->setType(CompleteTensorType::create(
-                  at::kFloat,
-                  at::kCPU,
-                  szs1));
+            std::vector<long> szs1(szs.begin()+1, szs.end());
+            squeezeNode->output()->setType(CompleteTensorType::create(
+                at::kFloat,
+                at::kCPU,
+                szs1));
 
-              node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
-              node->removeAllInputs();
-              // it.destroyCurrent();
+            node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
+            node->removeAllInputs();
+            // it.destroyCurrent();
 //                          removeNodes.emplace_back(indxNode);
-              //            removeNodes.emplace_back(node);
+            //            removeNodes.emplace_back(node);
 
-              //            node->destroy();
-              //            eraseUnusedValuesFromMap(valsToParamsMap);
-              //            eraseUnusedBlockInputs(b);
-              //            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
+            //            node->destroy();
+            //            eraseUnusedValuesFromMap(valsToParamsMap);
+            //            eraseUnusedBlockInputs(b);
+            //            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
 
-              //            for (auto a : paramsDict) {
-              //              std::cerr << std::string(0, ' ') << a.first << " : " << a.second.toString() << " "
-              //                        << a.second.sizes() << " : " << a.second.data<float>()[0] << std::endl;
-              //            }
+            //            for (auto a : paramsDict) {
+            //              std::cerr << std::string(0, ' ') << a.first << " : " << a.second.toString() << " "
+            //                        << a.second.sizes() << " : " << a.second.data<float>()[0] << std::endl;
+            //            }
 
 
 
-              itCurr = it;
-              ++itCurr;
+            itCurr = it;
+            ++itCurr;
 
-              indxNode->destroy();
-              it.destroyCurrent();
+            indxNode->destroy();
+            it.destroyCurrent();
 
-              processed = true;
-              break;
-            }
+            processed = true;
+            break;
           }
         }
-      }
+      } else if (node->kind() == onnx::Slice && node->inputs().size() == 1) {
+          axis = 0LL;
+          if (node->hasAttribute(attr::axis) &&
+              node->kindOf(attr::axis) == AttributeKind::i) {
+            axis = node->i(attr::axis);
+          }
+
+
+
+
+
+
+
+        auto indx = node->inputs()[0];
+        auto indxNode = indx->node();
+//        if (indxNode->kind() == onnx::Constant) {
+//          if (indxNode->hasAttribute(attr::value) &&
+//              indxNode->kindOf(attr::value) == AttributeKind::t) {
+//            const at::Tensor& idxValT = indxNode->t(attr::value);
+//            int64_t idxVal = idxValT.data<int64_t>()[0];
+//            int64_t endVal = idxVal + 1L;
+
+//              auto inp = node->inputs()[0];
+        auto it = indx->type();
+            auto itc = it->cast<CompleteTensorType>();//->sizes();
+            if (itc) {
+              auto sizes = itc->sizes();
+              sizes[axis] = 1;
+
+
+              node->output()->setType(CompleteTensorType::create(
+                  at::kFloat,
+                  at::kCPU,
+                  sizes));
+
+
+            }
+
+
+
+
+
+
+
+
+
+
+
+
+          }
     }
 //    for (auto n : removeNodes) {
 //      n->destroy();

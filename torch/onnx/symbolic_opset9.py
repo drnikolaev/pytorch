@@ -281,14 +281,20 @@ def embedding_bag(g,
                 sparse_i=sparse)
 
 
-# @parse_args('v', 'i')
+@parse_args('v', 'i')
 def size(g, self, dim):
-    # self_sizes = self.type().sizes()
-    # if self_sizes:
-    #     dim_val = _parse_arg(dim, 'i')
-    #     return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
+    self_sizes = self.type().sizes()
     full_shape = g.op("Shape", self)
-    print(full_shape.type())
+    if self_sizes:
+        dim_val = _parse_arg(dim, 'i')
+        slice_node = narrow(g, full_shape, dim_val, 0, 1) #g.op("Slice", full_shape, axes_i=[dim], starts_i=[0], ends_i=[1])
+        return slice_node
+    return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
+
+
+
+    #     return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
+    # print(full_shape.type())
     # return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
     # dim_val = _parse_arg(dim, 'i')
     # return select(g, full_shape, 0, dim_val, dim_val + 1)
@@ -305,9 +311,9 @@ def size(g, self, dim):
     #              torch.LongTensor([1]), 1)
     # return _slice_op(g, full_shape, axes=[dim], starts=[0], ends=[1])
 
-    slice_node = narrow(g, full_shape, dim, 0, 1) #g.op("Slice", full_shape, axes_i=[dim], starts_i=[0], ends_i=[1])
-    print(slice_node.type())
-    return slice_node
+    # print(slice_node.type())
+    # return g.op("Unsqueeze", slice_node, axes_i=[dim_val]) # if dim > 0 else slice_node
+
 
     # return narrow(g, full_shape, dim, 0, 1)
 
