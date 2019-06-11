@@ -571,7 +571,7 @@ static void eraseListConstruct(Block* block) {
           concat_node->i_(attr::axis, 0);
           for (auto v : unsqueezed) {
 
-            std::cerr << v->type()->str() << std::endl;
+//            std::cerr << v->type()->str() << std::endl;
 
             concat_node->addInput(v);
           }

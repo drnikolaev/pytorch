@@ -242,7 +242,7 @@ std::vector<int64_t> collectFoldables(int& axis, int level, Node* node,
   if (node->kind() == onnx::Constant) {
     if (node->hasAttribute(attr::value) &&
         node->kindOf(attr::value) == AttributeKind::t) {
-      const at::Tensor& val = node->t(attr::value);
+      at::Tensor val = node->t(attr::value);
 //      std::cout << std::string(level, ' ') << val.toString() << " "
 //          << val.sizes() << " : " << val.item().toLong() << std::endl;
       ret.emplace_back(val.item().toLong());
