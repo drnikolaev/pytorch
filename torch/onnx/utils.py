@@ -220,6 +220,7 @@ def _optimize_graph(graph, operator_export_type, _disable_torch_constant_prop=Fa
     torch._C._jit_pass_lower_all_tuples(graph)
     torch._C._jit_pass_peephole(graph, True)
     torch._C._jit_pass_lint(graph)
+
     if operator_export_type != OperatorExportTypes.RAW:
         graph = torch._C._jit_pass_onnx(graph, operator_export_type)
         torch._C._jit_pass_lint(graph)
@@ -267,11 +268,11 @@ def _trace_and_get_graph_from_model(model, args, training):
     return trace.graph(), torch_out
 
 
-def _model_to_graph(model, args, verbose=True, training=False,
+def _model_to_graph(model, args, verbose=False, training=False,
                     input_names=None, output_names=None,
                     operator_export_type=OperatorExportTypes.ONNX,
                     example_outputs=None, propagate=False,
-                    _retain_param_name=False, do_constant_folding=True,
+                    _retain_param_name=False, do_constant_folding=False,
                     _disable_torch_constant_prop=False):
     from torch.onnx.symbolic_helper import _export_onnx_opset_version
     # Special case for common case of passing a single Tensor
@@ -330,15 +331,12 @@ def _model_to_graph(model, args, verbose=True, training=False,
     param_names = input_and_param_names[len(input_and_param_names) - len(params):]
     params_dict = dict(zip(param_names, params))
 
+    if do_constant_folding and _export_onnx_opset_version == 9:
+        params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict)
+        torch._C._jit_pass_dce(graph)
+
     if verbose:
-        print("CF-->\n", graph)
-
-    # if do_constant_folding and _export_onnx_opset_version == 9:
-    # params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict)
-    # torch._C._jit_pass_dce(graph)
-
-    # if verbose:
-    #     print("<--CF\n", graph)
+        print(graph)
 
     return graph, params_dict, torch_out
 
@@ -385,7 +383,7 @@ def _export_to_pretty_string(model, args, f, export_params=True, verbose=False, 
 def _export(model, args, f, export_params=True, verbose=False, training=False,
             input_names=None, output_names=None, operator_export_type=OperatorExportTypes.ONNX,
             export_type=ExportTypes.PROTOBUF_FILE, example_outputs=None, propagate=False,
-            opset_version=None, _retain_param_name=False, do_constant_folding=True,
+            opset_version=None, _retain_param_name=False, do_constant_folding=False,
             strip_doc_string=True, dynamic_axes=None):
     global __IN_ONNX_EXPORT
     assert __IN_ONNX_EXPORT is False
