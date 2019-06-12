@@ -8,8 +8,6 @@ import torch.onnx
 import torch.onnx.utils
 
 from functools import partial
-from functools import reduce
-from operator import mul as omul
 
 import torch.onnx.symbolic_helper as sym_help
 from torch.onnx.symbolic_helper import parse_args, _parse_arg, _unimplemented
@@ -281,15 +279,19 @@ def embedding_bag(g,
                 sparse_i=sparse)
 
 
-@parse_args('v', 'i')
 def size(g, self, dim):
-    self_sizes = self.type().sizes()
     full_shape = g.op("Shape", self)
-    if self_sizes:
-        dim_val = _parse_arg(dim, 'i')
-        slice_node = narrow(g, full_shape, dim_val, 0, 1) #g.op("Slice", full_shape, axes_i=[dim], starts_i=[0], ends_i=[1])
-        return slice_node
     return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
+
+# @parse_args('v', 'i')
+# def size(g, self, dim):
+#     self_sizes = self.type().sizes()
+#     full_shape = g.op("Shape", self)
+#     if self_sizes:
+#         dim_val = _parse_arg(dim, 'i')
+#         slice_node = narrow(g, full_shape, dim_val, 0, 1) #g.op("Slice", full_shape, axes_i=[dim], starts_i=[0], ends_i=[1])
+#         return slice_node
+#     return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
 
 
 
@@ -419,22 +421,6 @@ def select(g, self, dim, index):
         return g.op("Squeeze", slice_node, axes_i=[dim])
     else:
         return g.op("Gather", self, index, axis_i=dim)
-#
-#     # if dim > -1:
-#     # TODO: this is a temporary hack because of the implementation details
-#     # of Gather in caffe2. We need to change this as soon as possible.
-#     # TODO: this breaks if index == -1
-#     index_val = _parse_arg(index, 'i')
-#     end_val = index_val + 1 if index_val >= 0 else index_val + self.type().sizes()[dim]
-#     # slice_node = _slice_op(g, self, axes=[dim],
-#     #                        starts=[index_val], ends=[end_val])
-#
-#     slice_node = g.op("Slice", self, axes_i=[dim], starts_i=[index_val], ends_i=[end_val])
-#
-#     return g.op("Squeeze", slice_node, axes_i=[dim]) if dim > 0 else slice_node;
-#     # else:
-#     #     return g.op("Gather", self, index, axis_i=dim)
-# #        return g.op('Slice', self, axes_i=[dim], starts_i=[index], ends_i=[indexEnd])
 
 
 def squeeze(g, self, dim=None):

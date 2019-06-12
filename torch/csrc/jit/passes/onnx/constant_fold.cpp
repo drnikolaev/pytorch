@@ -1,4 +1,3 @@
-#include <torch/include/ATen/NativeFunctions.h>
 #include <ATen/native/TensorFactories.h>
 #include <c10/util/Exception.h>
 #include <c10/util/Optional.h>
@@ -204,19 +203,23 @@ std::vector<Node*> getOnnxConstParentsToRemove(Node* node) {
 } // Anonymous namespace
 
 
-bool isDynamic(int axis, const Node* node, const Graph* graph) {
-  if (node == nullptr || axis >= node->inputs().size()) {
+bool isDynamic(const Node* node, const Graph* graph) {
+  if (node == nullptr) {
     return false;
   }
-  auto inp = node->inputs()[axis];
-  auto ginps = graph->inputs();
-  for (auto ginp : ginps) {
-    if (inp == ginp) {
+  for (auto inp : node->inputs()) {
+    auto ginps = graph->inputs();
+    for (auto ginp : ginps) {
+      if (inp == ginp) {
+        return true;
+      }
+    }
+    if (inp->type()->cast<DimensionedTensorType>()) {
+      return false;
+    }
+    if (isDynamic(inp->node(), graph)) {
       return true;
     }
-  }
-  if (isDynamic(axis, inp->node(), graph)) {
-    return true;
   }
   return false;
 }
@@ -250,7 +253,7 @@ std::vector<int64_t> collectFoldables(int& axis, int level, Node* node,
   } else if (node->kind() == onnx::Shape && node->inputs().size() == 1) {
 //    auto inp = node->inputs()[0];
 //    auto ginps = node->owningGraph()->inputs();
-    if (isDynamic(axis, node, node->owningGraph())) {
+    if (isDynamic(node, node->owningGraph())) {
 //      if (inp == ginp) {
 //        std::string used = inp->uniqueName();
         std::cerr << " =======================================\n";
@@ -371,31 +374,6 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
       }
     }
   }
-
-  /*
-    std::vector<long int> values;
-    for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it)
-    { std::vector<std::vector<Node*>> removeNodes; auto node = *it; if
-    (node->kind() == onnx::Concat && node->hasUses()) { values =
-    collectFoldables(0, node, removeNodes); if (!values.empty()) { at::Tensor
-    updatedVal = at::native::tensor(values, at::TensorOptions().
-              device(at::kCPU).dtype(at::kLong).layout(at::kStrided).is_variable(true));
-          Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
-          new_shape->t_(attr::value, updatedVal);
-          auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
-          newSourceNodeOutput->inferTypeFrom(updatedVal);
-          node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
-          node->removeAllInputs();
-          for (auto itn = removeNodes.begin(); itn != removeNodes.end(); ++itn)
-    { for (auto n : *itn) { if (node != n) { n->destroy();
-              }
-            }
-          }
-          it.destroyCurrent();
-        }
-      }
-    }
-    */
 
 //  auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
 

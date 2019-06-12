@@ -1820,7 +1820,7 @@ class TestCaffe2Backend(unittest.TestCase):
         outputs = model(inputs)
         self.run_model_test(model, train=False, input=(inputs,), batch_size=BATCH_SIZE,
                             example_outputs=(outputs,))
-
+    @skip
     def test_dynamic_loop(self):
         class LoopModel(torch.jit.ScriptModule):
             @torch.jit.script_method

@@ -532,47 +532,22 @@ static void eraseListConstruct(Block* block) {
         auto* lc_node = input->node();
         TypePtr elem =
             lc_node->output()->type()->cast<ListType>()->getElementType();
-
-//////        c10::IntType* ee = elem->cast<IntType>().get();
-//        std::cout << *ee                  << std::endl;
-
         if (elem->cast<IntType>()) {
           // ListConstruct Int[] output case, we need to transfrom to ONNX
           // Concat to ensure the output is a single tensor(dynamic) type in
           // order to be consumed as inputs
           std::vector<Value*> unsqueezed;
           Graph* g = block->owningGraph();
-          for (int k = 0; k < lc_node->inputs().size(); ++k) {
-
-            auto* lcinput = lc_node->inputs()[k];
-
-//            auto s = lcinput->type()
-//                ->expect<OptionalType>();
-////                ->sizes();
-//            std::cerr << s->str() << std::endl;
-
-            //            at::Tensor* t = reinterpret_cast<at::Tensor*>(input->type().get());
-//            std::cout << std::string(10, ' ') //<< //idxValT.toString() << " "
-//                      << t->sizes() << " : " << t->data<long>()[0]
-//                      << std::endl;
-
-//            if (k == 1) {
-              Node* unsqueezed_node = g->create(onnx::Unsqueeze, 1);
-              unsqueezed_node->insertBefore(lc_node);
-              unsqueezed_node->addInput(lcinput);
-              unsqueezed_node->is_(attr::axes, {0});
-              unsqueezed.emplace_back(unsqueezed_node->output());
-//            } else {
-//              unsqueezed.emplace_back(lc_node->output());
-//
-//            }
+          for (auto* input : lc_node->inputs()) {
+            Node* unsqueezed_node = g->create(onnx::Unsqueeze, 1);
+            unsqueezed_node->insertBefore(lc_node);
+            unsqueezed_node->addInput(input);
+            unsqueezed_node->is_(attr::axes, {0});
+            unsqueezed.emplace_back(unsqueezed_node->output());
           }
           Node* concat_node = g->create(onnx::Concat, 1);
           concat_node->i_(attr::axis, 0);
           for (auto v : unsqueezed) {
-
-//            std::cerr << v->type()->str() << std::endl;
-
             concat_node->addInput(v);
           }
           concat_node->insertBefore(lc_node);
