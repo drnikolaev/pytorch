@@ -243,7 +243,7 @@ def set_training(model, mode):
             model.train(old_mode)
 
 
-def verify(model, args, backend, verbose=True, training=False, rtol=1e-3, atol=1e-7,
+def verify(model, args, backend, verbose=False, training=False, rtol=1e-3, atol=1e-7,
            test_args=2, do_constant_folding=False, example_outputs=None):
     """
     Export a model into ONNX, import it into a specified ONNX backend, and then

@@ -283,62 +283,6 @@ def size(g, self, dim):
     full_shape = g.op("Shape", self)
     return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
 
-# @parse_args('v', 'i')
-# def size(g, self, dim):
-#     self_sizes = self.type().sizes()
-#     full_shape = g.op("Shape", self)
-#     if self_sizes:
-#         dim_val = _parse_arg(dim, 'i')
-#         slice_node = narrow(g, full_shape, dim_val, 0, 1) #g.op("Slice", full_shape, axes_i=[dim], starts_i=[0], ends_i=[1])
-#         return slice_node
-#     return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
-
-
-
-    #     return g.op("Constant", value_t = torch.tensor(self_sizes[dim_val], dtype=torch.long))
-    # print(full_shape.type())
-    # return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
-    # dim_val = _parse_arg(dim, 'i')
-    # return select(g, full_shape, 0, dim_val, dim_val + 1)
-
-    # index_val = 0
-    # end_val = 1
-    # slice_node = _slice_op(g, self, axes=[dim],
-    #                        starts=[index_val], ends=[end_val])
-
-    # slice_node = g.op("Slice", full_shape, axes_i=[dim], starts_i=[index_val], ends_i=[end_val])
-
-    # return g.op("Squeeze", slice_node, axes_i=[dim]) # if dim > 0 else slice_node
-    # return slice(g, full_shape, torch.LongTensor(dim), torch.LongTensor([0]),
-    #              torch.LongTensor([1]), 1)
-    # return _slice_op(g, full_shape, axes=[dim], starts=[0], ends=[1])
-
-    # print(slice_node.type())
-    # return g.op("Unsqueeze", slice_node, axes_i=[dim_val]) # if dim > 0 else slice_node
-
-
-    # return narrow(g, full_shape, dim, 0, 1)
-
-
-
-# def slice(g, self, dim, start, end, step):
-#     if step != 1:
-#         _unimplemented("slice", "step!=1 is currently not supported")
-#     if start.node().kind() != 'onnx::Constant' or \
-#             end.node().kind() != 'onnx::Constant' or dim.node().kind() != 'onnx::Constant':
-#         start_unsqueezed = g.op("Unsqueeze", start, axes_i=[0])
-#         end_unsqueezed = g.op("Unsqueeze", end, axes_i=[0])
-#         dim_unsqueezed = g.op("Unsqueeze", dim, axes_i=[0])
-#         return g.op("DynamicSlice", self, start_unsqueezed, end_unsqueezed, dim_unsqueezed)
-#     else:
-#         start = _parse_arg(start, 'i')
-#         end = _parse_arg(end, 'i')
-#         dim = _parse_arg(dim, 'i')
-#         return _slice_op(g, self, axes=[dim], starts=[start], ends=[end])
-
-
-
-
 
 @parse_args('v', 'i', 'i')
 def transpose(g, self, dim0, dim1):

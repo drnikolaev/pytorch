@@ -152,7 +152,7 @@ class TestCaffe2Backend(unittest.TestCase):
         if use_gpu:
             model, input = self.convert_cuda(model, input)
 
-        onnxir, torch_out = do_export(model, input, export_params=self.embed_params, verbose=True,
+        onnxir, torch_out = do_export(model, input, export_params=self.embed_params, verbose=False,
                                       example_outputs=example_outputs,
                                       do_constant_folding=do_constant_folding)
         if isinstance(torch_out, torch.autograd.Variable):
@@ -239,7 +239,7 @@ class TestCaffe2Backend(unittest.TestCase):
         # Note that the export call explicitly sets the names of not just the input,
         # but also the parameters. This test checks that the model can be loaded and
         # executed in Caffe2 backend correctly.
-        torch.onnx._export(model, input, f, verbose=True, export_type=ExportTypes.ZIP_ARCHIVE,
+        torch.onnx._export(model, input, f, verbose=False, export_type=ExportTypes.ZIP_ARCHIVE,
                            input_names=['input1', 'parameter1', 'parameter2'])
 
         f.seek(0)
@@ -265,7 +265,7 @@ class TestCaffe2Backend(unittest.TestCase):
         # But note that the target first parameter name is the same as the second parameter name.
         # This test checks that given this edge condition, the model can be loaded and executed
         # in Caffe2 backend correctly.
-        torch.onnx._export(model, input, f, verbose=True, export_type=ExportTypes.ZIP_ARCHIVE,
+        torch.onnx._export(model, input, f, verbose=False, export_type=ExportTypes.ZIP_ARCHIVE,
                            input_names=['input1', 'fc1.bias'], _retain_param_name=False)
 
         f.seek(0)
@@ -431,8 +431,8 @@ class TestCaffe2Backend(unittest.TestCase):
             assert len(prepared.init_net.op) == 875
             assert len(prepared.predict_net.op) == 130
         else:
-            assert len(prepared.init_net.op) == 7
-            assert len(prepared.predict_net.op) == 1006
+            assert len(prepared.init_net.op) == 8
+            assert len(prepared.predict_net.op) == 997
 
     def test_alexnet(self):
         state_dict = model_zoo.load_url(model_urls['alexnet'], progress=False)
@@ -1788,7 +1788,7 @@ class TestCaffe2Backend(unittest.TestCase):
         inputs = torch.zeros(1, 2, 3, dtype=torch.long)
         outputs = model(inputs)
         self.run_model_test(model, train=False, input=(inputs,), batch_size=BATCH_SIZE,
-                            example_outputs=(outputs,))
+                            example_outputs=(outputs,), use_gpu=False) # TODO 'ONNXWhile' on CUDA
 
     def test_while_cond(self):
         class WhileModel(torch.jit.ScriptModule):
@@ -1805,7 +1805,7 @@ class TestCaffe2Backend(unittest.TestCase):
         a = torch.tensor([0], dtype=torch.long)
         outputs = model(x, a)
         self.run_model_test(model, train=False, input=(x, a), batch_size=BATCH_SIZE,
-                            example_outputs=(outputs,))
+                            example_outputs=(outputs,), use_gpu=False) # TODO 'ONNXWhile' on CUDA
 
     def test_loop(self):
         class LoopModel(torch.jit.ScriptModule):
@@ -1819,7 +1819,8 @@ class TestCaffe2Backend(unittest.TestCase):
         inputs = torch.zeros(1, 2, 3, dtype=torch.long)
         outputs = model(inputs)
         self.run_model_test(model, train=False, input=(inputs,), batch_size=BATCH_SIZE,
-                            example_outputs=(outputs,))
+                            example_outputs=(outputs,), use_gpu=False) # TODO 'ONNXWhile' on CUDA
+
     @skip
     def test_dynamic_loop(self):
         class LoopModel(torch.jit.ScriptModule):
@@ -1852,7 +1853,7 @@ class TestCaffe2Backend(unittest.TestCase):
         inputs = torch.zeros(1, 2, 3, dtype=torch.long)
         outputs = model(inputs)
         self.run_model_test(model, train=False, input=(inputs,), batch_size=BATCH_SIZE,
-                            example_outputs=(outputs,))
+                            example_outputs=(outputs,), use_gpu=False) # TODO 'ONNXWhile' on CUDA
 
     def test_select(self):
         class SelectModel(torch.nn.Module):

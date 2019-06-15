@@ -331,10 +331,9 @@ def _model_to_graph(model, args, verbose=False, training=False,
     param_names = input_and_param_names[len(input_and_param_names) - len(params):]
     params_dict = dict(zip(param_names, params))
 
-    verbose=True
-    if verbose:
-        print("-->\n")
-        print(graph)
+    # if verbose:
+    #     print("-->\n")
+    #     print(graph)
 
     # if do_constant_folding and _export_onnx_opset_version == 9:
     params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict)
@@ -569,16 +568,6 @@ def _graph_op(g, opname, *raw_args, **kwargs):
             in positional.
     """
     outputs = kwargs.pop('outputs', 1)
-
-    # v = kwargs.get('value_t', None)
-    # if (v is not None):
-    #     print("### ", v.tolist())
-    #     print("dim  ", v.dim())
-    #     if (v.dim()>0):
-    #         print("size ", v.size(0))
-    #     if (v.dim()==0 and v.data.item() in [2, 9216]):
-    #         print("!!!", v.data.item())
-    #     # print("### ", v.data.item() if v.dim()==1 and v.size(0)==1 else v.tolist())
 
     # Filter out None attributes, this can be convenient client side because
     # now they can pass through None attributes, and have them not show up
