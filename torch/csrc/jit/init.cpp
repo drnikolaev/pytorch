@@ -113,6 +113,11 @@ void initJITBindings(PyObject* module) {
              std::map<std::string, at::Tensor>& paramsDict) {
             ConstantFoldONNX(graph->block(), paramsDict); // overload resolution
             return paramsDict;
+          })
+      .def(
+          "_jit_pass_onnx_gather_fix",
+          [](std::shared_ptr<Graph>& graph) {
+            ConstantGatherFixONNX(graph->block()); // overload resolution
           },
           pybind11::return_value_policy::move)
       .def("_jit_pass_fuse", FuseGraph)

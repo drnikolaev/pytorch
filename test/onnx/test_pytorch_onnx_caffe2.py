@@ -1429,6 +1429,7 @@ class TestCaffe2Backend(unittest.TestCase):
         caffe2_out = prepared.run(inputs=[x.cpu().numpy()])
         self.assertEqual(caffe2_out[0].shape, x.shape)
 
+    @skipIfEmbed  # TODO
     def test_traced_ints(self):
         A = 4
         H = 10

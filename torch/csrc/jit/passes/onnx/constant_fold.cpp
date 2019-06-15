@@ -364,7 +364,10 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
       }
     }
   }
+}
 
+
+void ConstantGatherFixONNX(Block* b) {
   bool processed;
   auto itCurr = b->nodes().begin(), end = b->nodes().end();
   do {
@@ -376,7 +379,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
         break;
       }
       if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
-        axis = 0;
+        int axis = 0;
         if (node->hasAttribute(attr::axis) &&
             node->kindOf(attr::axis) == AttributeKind::i) {
           axis = node->i(attr::axis);
@@ -410,9 +413,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
             sliceNode->is_(attr::starts, {idxVal});
             sliceNode->is_(attr::ends, {endVal});
             sliceNode->insertInput(0, data);
-
             auto sliceNodeOutput = sliceNode->insertAfter(node)->output();
-
             Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
             squeezeNode->insertInput(0, sliceNodeOutput);
             squeezeNode->is_(attr::axes, {axis});
@@ -426,9 +427,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
             } else {
               break;
             }
-
             node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
-
             auto onnxConstParents = getOnnxConstParentsToRemove(node);
             node->removeAllInputs();
             for (auto* n : onnxConstParents) {
@@ -445,6 +444,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     }
   } while (processed);
 }
+
 
 // Default implementation
 //  auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
