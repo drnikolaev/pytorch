@@ -367,7 +367,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 }
 
 
-void ConstantGatherFixONNX(Block* b) {
+void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDict) {
   bool processed;
   auto itCurr = b->nodes().begin(), end = b->nodes().end();
   do {
