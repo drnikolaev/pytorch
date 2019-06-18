@@ -369,6 +369,7 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
 
 void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDict) {
   bool processed;
+  auto valsToParamsMap = buildValueToParamsMap(b, paramDict);
   auto itCurr = b->nodes().begin(), end = b->nodes().end();
   do {
     processed = false;
@@ -380,6 +381,17 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
       }
       if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
         int axis = 0;
+
+        auto inputTensorValues = getValues(node, valsToParamsMap);
+        auto updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
+        at::Tensor updatedVal = *updatedValWrapped;
+        auto newSourceNodeOutput = b->addInput();
+
+
+
+
+
+
         if (node->hasAttribute(attr::axis) &&
             node->kindOf(attr::axis) == AttributeKind::i) {
           axis = node->i(attr::axis);
@@ -427,6 +439,18 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
             } else {
               break;
             }
+
+
+            valsToParamsMap.insert(
+                {newSourceNodeOutput,
+                 std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
+            newSourceNodeOutput->inferTypeFrom(updatedVal);
+
+            eraseUnusedValuesFromMap(valsToParamsMap);
+            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramDict);
+
+
+
             node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
             auto onnxConstParents = getOnnxConstParentsToRemove(node);
             node->removeAllInputs();

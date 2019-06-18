@@ -339,7 +339,7 @@ def _model_to_graph(model, args, verbose=False, training=False,
         params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict)
         torch._C._jit_pass_dce(graph)
 
-    torch._C._jit_pass_onnx_gather_fix(graph)
+    torch._C._jit_pass_onnx_gather_fix(graph, params_dict)
 
 
     if verbose:
