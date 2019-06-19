@@ -336,14 +336,14 @@ def _model_to_graph(model, args, verbose=False, training=False,
     #     print(graph)
 
     # if do_constant_folding and _export_onnx_opset_version == 9:
-    # params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict)
-    # torch._C._jit_pass_dce(graph)
-    torch._C._jit_pass_onnx_gather_fix(graph, params_dict)
+    params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict)
+    torch._C._jit_pass_dce(graph)
+    # torch._C._jit_pass_onnx_gather_fix(graph, params_dict)
 
 
-    if verbose:
-        # print("<--\n")
-        print(graph)
+    # if verbose:
+    #     print("<--\n")
+    #     print(graph)
 
     return graph, params_dict, torch_out
 

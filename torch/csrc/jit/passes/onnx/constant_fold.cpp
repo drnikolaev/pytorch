@@ -439,6 +439,10 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
             sliceNode->is_(attr::starts, {idxVal});
             sliceNode->is_(attr::ends, {endVal});
             sliceNode->insertInput(0, data);
+
+
+//            for (auto unsqueezeNode : node->hasUses()) {
+//            }
             auto sliceNodeOutput = sliceNode->insertAfter(node)->output();
 //            Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
 //            squeezeNode->insertInput(0, sliceNodeOutput);
@@ -464,9 +468,33 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
 //            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramDict);
 
 
+//            auto o = node->outputs()[0];
+            Node* unsqueezeNode = nullptr;
 
-//            node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
+//            for (auto unsqueeze : o->uses()) {
+//              if (unsqueeze.user->kind() == onnx::Unsqueeze) {
+//                unsqueezeNode = unsqueeze.user;
+//              }
+//
+//            }
+
+
+
+            //            node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
             node->outputs().at(0)->replaceAllUsesWith(sliceNodeOutput);
+
+            for (auto itu = b->nodes().begin(), endu = b->nodes().end(); itu != endu; ++itu) {
+              auto nodeu = *itu;
+              if (nodeu->kind() == onnx::Unsqueeze && nodeu->inputs()[0]->node() == sliceNode) {
+
+                nodeu->replaceAllUsesWith(sliceNode);
+                unsqueezeNode = nodeu;//->destroy();
+                break;
+
+              }
+            }
+
+
             auto onnxConstParents = getOnnxConstParentsToRemove(node);
             node->removeAllInputs();
             for (auto* n : onnxConstParents) {
@@ -474,7 +502,10 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
             }
             itCurr = it;
             ++itCurr;
+
+
             it.destroyCurrent();
+            unsqueezeNode ->destroy();
             processed = true;
             break;
           }
