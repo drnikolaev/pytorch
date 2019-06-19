@@ -205,8 +205,6 @@ bool isRNN(const Node* node) {
   return k == onnx::RNN || k == onnx::LSTM || k == onnx::GRU;
 }
 
-} // Anonymous namespace
-
 // Recursive tracker on input node dependency
 bool isDynamic(const Node* node, const Graph* graph) {
   if (node == nullptr) {
@@ -317,6 +315,8 @@ std::vector<int64_t> collectFoldables(int& axis, int level, Node* node,
   return ret;
 }
 
+} // Anonymous namespace
+
 // This method updates the block in-place to fold all the one-time
 // constant-based computations/ops into an initializer node.
 void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
@@ -339,14 +339,14 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
     std::vector<std::vector<Node*>> removeNodes;
     auto node = *it;
     if (isRNN(node)) {
-      break;
+      return;
     }
     if (node->kind() == onnx::Concat && node->hasUses()) {
       values = collectFoldables(axis, 0, node, removeNodes);
       if (!values.empty()) {
         at::Tensor updatedVal = at::native::tensor(values,
-            at::TensorOptions().device(at::kCPU).dtype(at::kLong).layout(at::kStrided).is_variable(
-                true));
+            at::TensorOptions().dtype(at::kLong).is_variable(true).layout(at::kStrided)
+            .device(at::kCPU));
         Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
         new_shape->t_(attr::value, updatedVal);
         auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
@@ -364,213 +364,62 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
       }
     }
   }
-}
 
-std::vector<int64_t> deduceCompleteType(const Node* node) {
-  std::vector<int64_t> ret;
-  while(true) {
-    auto data = node->inputs()[0];
-    auto data_type = data->type()->cast<CompleteTensorType>();
-    if (data_type != nullptr) {
-      ret = data_type->sizes();
-      break;
+  // Default implementation
+  auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
+  // Only the root block is constant-folded. Folding nested blocks is
+  // not supported for now.
+  for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
+    auto node = *it;
+    if (node->outputs().size() > 1) {
+      // Constant folding for multiple-output nodes not supported. Skip it.
+      continue;
     }
-    node = data->node();
-    if (node == nullptr) {
-      break;
+    if (!areNodeInputsConstant(node, valsToParamsMap)) {
+      // If all the inputs to this node are not either parameter or
+      // onnx::Constant, then skip this node.
+      continue;
     }
+    auto inputTensorValues = getValues(node, valsToParamsMap);
+    if (inputTensorValues.empty()) {
+      // This is a terminal node with no inputs, such as onnx::Constant. Skip
+      // it.
+      continue;
+    }
+    auto updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
+    if (updatedValWrapped == c10::nullopt) {
+      // Constant folding is not supported for this op. Skip it.
+      continue;
+    }
+    // Create a new input to the block (prim::Param node output). Add a
+    // corresponding entryin valToParamMap. Replace the downstream inputs
+    // with this value, and disconnect all the input values of the folded node.
+    at::Tensor updatedVal = *updatedValWrapped;
+    auto newSourceNodeOutput = b->addInput();
+    valsToParamsMap.insert(
+        {newSourceNodeOutput,
+         std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
+    newSourceNodeOutput->inferTypeFrom(updatedVal);
+    node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
+
+    // Next we remove the current node that has been replaced by
+    // an initializer. But before we start de-wiring this node,
+    // we check if any parents of this nodes were onnx::Constant
+    // and remove them first (following proper sequence as shown
+    // below), and then remove the current node. If the parent was
+    // an initializer (not onnx::Constant) then they are all removed
+    // by eraseUnusedBlockInputs() call (below) outside the loop.
+    auto onnxConstParents = getOnnxConstParentsToRemove(node);
+    node->removeAllInputs();
+    for (auto* n : onnxConstParents) {
+      n->destroy();
+    }
+    it.destroyCurrent();
   }
-  return ret;
+  eraseUnusedValuesFromMap(valsToParamsMap);
+  eraseUnusedBlockInputs(b);
+  buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
 }
-
-void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDict) {
-  bool processed;
-//  auto valsToParamsMap = buildValueToParamsMap(b, paramDict);
-  auto itCurr = b->nodes().begin(), end = b->nodes().end();
-  do {
-    processed = false;
-    std::vector<long int> values;
-    for (auto it = itCurr; it != end; ++it) {
-      auto node = *it;
-      if (isRNN(node)) {
-        break;
-      }
-      if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
-        int axis = 0;
-
-//        auto inputTensorValues = getValues(node, valsToParamsMap);
-//        auto updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
-//        at::Tensor updatedVal = *updatedValWrapped;
-//        auto newSourceNodeOutput = b->addInput();
-
-
-
-
-
-
-        if (node->hasAttribute(attr::axis) &&
-            node->kindOf(attr::axis) == AttributeKind::i) {
-          axis = node->i(attr::axis);
-        }
-        auto data = node->inputs()[0];
-        auto indx = node->inputs()[1];
-        auto indxNode = indx->node();
-        if (indxNode->kind() == onnx::Constant) {
-          if (indxNode->hasAttribute(attr::value) &&
-              indxNode->kindOf(attr::value) == AttributeKind::t) {
-            const at::Tensor& idxValT = indxNode->t(attr::value);
-            int64_t idxVal = idxValT.data<int64_t>()[0];
-            int64_t endVal = idxVal + 1L;
-
-            Node* sliceNode = b->owningGraph()->create(onnx::Slice, 1);
-            std::vector<int64_t> sizes_slice = deduceCompleteType(node);
-            if (!sizes_slice.empty()) {
-              if (endVal <= 0) {
-                endVal += sizes_slice[axis];
-              }
-              sizes_slice.erase(sizes_slice.begin()+axis);
-              sliceNode->output()->setType(
-                  CompleteTensorType::create(at::kFloat, at::kCPU, sizes_slice));
-            } else {
-              break;
-            }
-
-            sliceNode->is_(attr::axes, {axis});
-            sliceNode->is_(attr::starts, {idxVal});
-            sliceNode->is_(attr::ends, {endVal});
-            sliceNode->insertInput(0, data);
-
-
-//            for (auto unsqueezeNode : node->hasUses()) {
-//            }
-            auto sliceNodeOutput = sliceNode->insertAfter(node)->output();
-//            Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
-//            squeezeNode->insertInput(0, sliceNodeOutput);
-//            squeezeNode->is_(attr::axes, {axis});
-//            auto squezeNodeOutput = squeezeNode->insertAfter(sliceNode)->output();
-
-//            if (!sizes_slice.empty()) {
-//              std::vector<long> sizes_squeeze(sizes_slice.begin() + 1,
-//                  sizes_slice.end());
-//              squeezeNode->output()->setType(CompleteTensorType::create(
-//                  at::kFloat, at::kCPU, sizes_squeeze));
-//            } else {
-//              break;
-//            }
-
-
-//            valsToParamsMap.insert(
-//                {newSourceNodeOutput,
-//                 std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
-//            newSourceNodeOutput->inferTypeFrom(updatedVal);
-//
-//            eraseUnusedValuesFromMap(valsToParamsMap);
-//            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramDict);
-
-
-//            auto o = node->outputs()[0];
-            Node* unsqueezeNode = nullptr;
-
-//            for (auto unsqueeze : o->uses()) {
-//              if (unsqueeze.user->kind() == onnx::Unsqueeze) {
-//                unsqueezeNode = unsqueeze.user;
-//              }
-//
-//            }
-
-
-
-            //            node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
-            node->outputs().at(0)->replaceAllUsesWith(sliceNodeOutput);
-
-            for (auto itu = b->nodes().begin(), endu = b->nodes().end(); itu != endu; ++itu) {
-              auto nodeu = *itu;
-              if (nodeu->kind() == onnx::Unsqueeze && nodeu->inputs()[0]->node() == sliceNode) {
-
-                nodeu->replaceAllUsesWith(sliceNode);
-                unsqueezeNode = nodeu;//->destroy();
-                break;
-
-              }
-            }
-
-
-            auto onnxConstParents = getOnnxConstParentsToRemove(node);
-            node->removeAllInputs();
-            for (auto* n : onnxConstParents) {
-              n->destroy();
-            }
-            itCurr = it;
-            ++itCurr;
-
-
-            it.destroyCurrent();
-            unsqueezeNode ->destroy();
-            processed = true;
-            break;
-          }
-        }
-      }
-    }
-  } while (processed);
-}
-
-
-// Default implementation
-//  auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);
-//  // Only the root block is constant-folded. Folding nested blocks is
-//  // not supported for now.
-//  for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
-//    auto node = *it;
-//    if (node->outputs().size() > 1) {
-//      // Constant folding for multiple-output nodes not supported. Skip it.
-//      continue;
-//    }
-//    if (!areNodeInputsConstant(node, valsToParamsMap)) {
-//      // If all the inputs to this node are not either parameter or
-//      // onnx::Constant, then skip this node.
-//      continue;
-//    }
-//    auto inputTensorValues = getValues(node, valsToParamsMap);
-//    if (inputTensorValues.empty()) {
-//      // This is a terminal node with no inputs, such as onnx::Constant. Skip
-//      // it.
-//      continue;
-//    }
-//    auto updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
-//    if (updatedValWrapped == c10::nullopt) {
-//      // Constant folding is not supported for this op. Skip it.
-//      continue;
-//    }
-//    // Create a new input to the block (prim::Param node output). Add a
-//    // corresponding entryin valToParamMap. Replace the downstream inputs
-//    // with this value, and disconnect all the input values of the folded node.
-//    at::Tensor updatedVal = *updatedValWrapped;
-//    auto newSourceNodeOutput = b->addInput();
-//    valsToParamsMap.insert(
-//        {newSourceNodeOutput,
-//         std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
-//    newSourceNodeOutput->inferTypeFrom(updatedVal);
-//    node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
-//
-//    // Next we remove the current node that has been replaced by
-//    // an initializer. But before we start de-wiring this node,
-//    // we check if any parents of this nodes were onnx::Constant
-//    // and remove them first (following proper sequence as shown
-//    // below), and then remove the current node. If the parent was
-//    // an initializer (not onnx::Constant) then they are all removed
-//    // by eraseUnusedBlockInputs() call (below) outside the loop.
-//    auto onnxConstParents = getOnnxConstParentsToRemove(node);
-//    node->removeAllInputs();
-//    for (auto* n : onnxConstParents) {
-//      n->destroy();
-//    }
-//    it.destroyCurrent();
-//  }
-//  eraseUnusedValuesFromMap(valsToParamsMap);
-//  eraseUnusedBlockInputs(b);
-//  buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
-//}
 
 } // namespace jit
 } // namespace torch

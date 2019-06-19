@@ -134,8 +134,7 @@ class TestCaffe2Backend(unittest.TestCase):
         return cuda_model, cuda_input
 
     def run_debug_test(self, model, train, batch_size, state_dict=None,
-                       input=None, use_gpu=True, example_outputs=None,
-                       do_constant_folding=True):
+                       input=None, use_gpu=True, example_outputs=None):
         """
         # TODO: remove this from the final release version
         This test is for our debugging only for the case where
@@ -154,7 +153,7 @@ class TestCaffe2Backend(unittest.TestCase):
 
         onnxir, torch_out = do_export(model, input, export_params=self.embed_params, verbose=False,
                                       example_outputs=example_outputs,
-                                      do_constant_folding=do_constant_folding)
+                                      do_constant_folding=False)
         if isinstance(torch_out, torch.autograd.Variable):
             torch_out = (torch_out,)
 
@@ -463,7 +462,7 @@ class TestCaffe2Backend(unittest.TestCase):
 
     @unittest.skipIf(not torch.cuda.is_available(),
                      "model on net has cuda in it, awaiting fix")
-    @skip
+    @skip("Unexpected key(s) in state_dict")
     def test_densenet(self):
         state_dict = model_zoo.load_url(model_urls['densenet121'], progress=False)
         self.run_model_test(densenet121(), train=False, batch_size=BATCH_SIZE,
@@ -505,7 +504,7 @@ class TestCaffe2Backend(unittest.TestCase):
     @skipIfTravis
     @skipIfNoLapack
     @skipIfNoCuda
-    @skip
+    @skip  # TODO
     def test_super_resolution(self):
         super_resolution_net = SuperResolutionNet(upscale_factor=3)
         state_dict = model_zoo.load_url(model_urls['super_resolution'], progress=False)
@@ -1269,7 +1268,6 @@ class TestCaffe2Backend(unittest.TestCase):
         x = torch.randn(3, 4)
         self.run_model_test(WhereMethod(), train=False, input=(x,), batch_size=BATCH_SIZE, use_gpu=False)
 
-    @skip
     def test_data_dependent_zeros_factory(self):
         class ZerosFactory(torch.nn.Module):
             def forward(self, input):
@@ -1520,7 +1518,6 @@ class TestCaffe2Backend(unittest.TestCase):
         inputs = (scores, bbox_deltas, im_info, anchors)
         self.run_model_test(MyModel(), train=False, input=inputs, batch_size=3)
 
-    @skip
     def test_c2_bbox_transform(self):
         class MyModel(torch.nn.Module):
             def __init__(self):
@@ -1561,7 +1558,6 @@ class TestCaffe2Backend(unittest.TestCase):
     # BoxWithNMSLimits has requirements for the inputs, so randomly generated inputs
     # in Caffe2BackendTestEmbed doesn't work with this op.
     @skipIfEmbed
-    @skip
     def test_c2_box_with_nms_limits(self):
         roi_counts = [0, 2, 3, 4, 5]
         num_classes = 7
@@ -1619,7 +1615,6 @@ class TestCaffe2Backend(unittest.TestCase):
         inputs = (torch.tensor(class_prob), torch.tensor(pred_bbox), torch.tensor(batch_splits))
         self.run_model_test(MyModel(), train=False, input=inputs, batch_size=3, use_gpu=False)
 
-    @skip
     def test_c2_inference_lstm(self):
         num_layers = 4
         seq_lens = 6
@@ -1692,14 +1687,13 @@ class TestCaffe2Backend(unittest.TestCase):
         x = torch.randn(1, 2, 3, 4, requires_grad=True)
         self.run_model_test(CeilModel(), train=False, input=x, batch_size=BATCH_SIZE)
 
-    @skip
     def test__dim_arange(self):
         class DimArange(torch.nn.Module):
             def forward(self, input):
                 return torch._dim_arange(input, 1)
 
         x = torch.ones(5, 6)
-        self.run_model_test(DimArange(), train=False, input=x, batch_size=BATCH_SIZE)
+        self.run_model_test(DimArange(), train=False, input=x, batch_size=BATCH_SIZE, use_gpu=False)
 
     def test_log2(self):
         class Log2Model(torch.nn.Module):
@@ -1822,7 +1816,6 @@ class TestCaffe2Backend(unittest.TestCase):
         self.run_model_test(model, train=False, input=(inputs,), batch_size=BATCH_SIZE,
                             example_outputs=(outputs,), use_gpu=False) # TODO 'ONNXWhile' on CUDA
 
-    @skip
     def test_dynamic_loop(self):
         class LoopModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1835,7 +1828,7 @@ class TestCaffe2Backend(unittest.TestCase):
         inputs = torch.zeros(1, 2, 3, dtype=torch.long)
         outputs = model(inputs)
         self.run_model_test(model, train=False, input=(inputs,), batch_size=BATCH_SIZE,
-                            example_outputs=(outputs,))
+                            example_outputs=(outputs,), use_gpu=False) # TODO 'ONNXWhile' on CUDA
 
     def test_nested_loops(self):
         class NestedLoopsModel(torch.jit.ScriptModule):
