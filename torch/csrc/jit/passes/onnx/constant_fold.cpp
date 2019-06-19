@@ -366,10 +366,26 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict) {
   }
 }
 
+std::vector<int64_t> deduceCompleteType(const Node* node) {
+  std::vector<int64_t> ret;
+  while(true) {
+    auto data = node->inputs()[0];
+    auto data_type = data->type()->cast<CompleteTensorType>();
+    if (data_type != nullptr) {
+      ret = data_type->sizes();
+      break;
+    }
+    node = data->node();
+    if (node == nullptr) {
+      break;
+    }
+  }
+  return ret;
+}
 
 void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDict) {
   bool processed;
-  auto valsToParamsMap = buildValueToParamsMap(b, paramDict);
+//  auto valsToParamsMap = buildValueToParamsMap(b, paramDict);
   auto itCurr = b->nodes().begin(), end = b->nodes().end();
   do {
     processed = false;
@@ -382,10 +398,10 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
       if (node->kind() == onnx::Gather && node->inputs().size() == 2) {
         int axis = 0;
 
-        auto inputTensorValues = getValues(node, valsToParamsMap);
-        auto updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
-        at::Tensor updatedVal = *updatedValWrapped;
-        auto newSourceNodeOutput = b->addInput();
+//        auto inputTensorValues = getValues(node, valsToParamsMap);
+//        auto updatedValWrapped = runTorchBackendForOnnx(node, inputTensorValues);
+//        at::Tensor updatedVal = *updatedValWrapped;
+//        auto newSourceNodeOutput = b->addInput();
 
 
 
@@ -407,14 +423,12 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
             int64_t endVal = idxVal + 1L;
 
             Node* sliceNode = b->owningGraph()->create(onnx::Slice, 1);
-            std::vector<int64_t> sizes_slice;
-            auto data_type = data->type()->cast<CompleteTensorType>();
-            if (data_type) {
-              sizes_slice = data_type->sizes();
+            std::vector<int64_t> sizes_slice = deduceCompleteType(node);
+            if (!sizes_slice.empty()) {
               if (endVal <= 0) {
                 endVal += sizes_slice[axis];
               }
-              sizes_slice[0] = 1;
+              sizes_slice.erase(sizes_slice.begin()+axis);
               sliceNode->output()->setType(
                   CompleteTensorType::create(at::kFloat, at::kCPU, sizes_slice));
             } else {
@@ -426,32 +440,33 @@ void ConstantGatherFixONNX(Block* b, std::map<std::string, at::Tensor>& paramDic
             sliceNode->is_(attr::ends, {endVal});
             sliceNode->insertInput(0, data);
             auto sliceNodeOutput = sliceNode->insertAfter(node)->output();
-            Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
-            squeezeNode->insertInput(0, sliceNodeOutput);
-            squeezeNode->is_(attr::axes, {axis});
-            auto squezeNodeOutput = squeezeNode->insertAfter(sliceNode)->output();
+//            Node* squeezeNode = b->owningGraph()->create(onnx::Squeeze, 1);
+//            squeezeNode->insertInput(0, sliceNodeOutput);
+//            squeezeNode->is_(attr::axes, {axis});
+//            auto squezeNodeOutput = squeezeNode->insertAfter(sliceNode)->output();
 
-            if (data_type) {
-              std::vector<long> sizes_squeeze(sizes_slice.begin() + 1,
-                  sizes_slice.end());
-              squeezeNode->output()->setType(CompleteTensorType::create(
-                  at::kFloat, at::kCPU, sizes_squeeze));
-            } else {
-              break;
-            }
-
-
-            valsToParamsMap.insert(
-                {newSourceNodeOutput,
-                 std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
-            newSourceNodeOutput->inferTypeFrom(updatedVal);
-
-            eraseUnusedValuesFromMap(valsToParamsMap);
-            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramDict);
+//            if (!sizes_slice.empty()) {
+//              std::vector<long> sizes_squeeze(sizes_slice.begin() + 1,
+//                  sizes_slice.end());
+//              squeezeNode->output()->setType(CompleteTensorType::create(
+//                  at::kFloat, at::kCPU, sizes_squeeze));
+//            } else {
+//              break;
+//            }
 
 
+//            valsToParamsMap.insert(
+//                {newSourceNodeOutput,
+//                 std::make_pair(newSourceNodeOutput->uniqueName(), updatedVal)});
+//            newSourceNodeOutput->inferTypeFrom(updatedVal);
+//
+//            eraseUnusedValuesFromMap(valsToParamsMap);
+//            buildParamsMapFromValueToParamsMap(valsToParamsMap, paramDict);
 
-            node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
+
+
+//            node->outputs().at(0)->replaceAllUsesWith(squezeNodeOutput);
+            node->outputs().at(0)->replaceAllUsesWith(sliceNodeOutput);
             auto onnxConstParents = getOnnxConstParentsToRemove(node);
             node->removeAllInputs();
             for (auto* n : onnxConstParents) {
