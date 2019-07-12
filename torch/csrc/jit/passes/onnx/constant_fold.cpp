@@ -1,7 +1,7 @@
-#include <ATen/native/TensorFactories.h>
-#include <c10/util/Exception.h>
-#include <c10/util/Optional.h>
 #include <torch/csrc/jit/passes/onnx/constant_fold.h>
+#include <c10/util/Exception.h>
+
+#include <c10/util/Optional.h>
 #include <algorithm>
 
 namespace torch {
