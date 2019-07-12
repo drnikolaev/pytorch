@@ -30,7 +30,7 @@ void copy_same_type_transpose_(Tensor& self, const Tensor& src) {
   }
   Tensor buf = empty({BLOCK_SZ, BLOCK_SZ}, self.options());
 
-  AT_DISPATCH_ALL_TYPES_AND2(kHalf, kBool, self.scalar_type(), "copy_", [&] {
+  AT_DISPATCH_ALL_TYPES_AND3(kHalf, kBool, kBFloat16, self.scalar_type(), "copy_", [&] {
     scalar_t* sp = src.data<scalar_t>();
     scalar_t* rp = self.data<scalar_t>();
     scalar_t* bp = buf.data<scalar_t>();
@@ -113,11 +113,10 @@ Tensor & copy_(Tensor & self, const Tensor & src, bool non_blocking) {
   }
 
   if (self.is_quantized() && src.is_quantized()) {
-    // TODO: uncomment after qscheme diff is landed
-    // TORCH_CHECK(self.qscheme() == src.qscheme(),
-    //             "Quantized Copy only works with same qscheme");
+    TORCH_CHECK(self.qscheme() == src.qscheme(),
+                "Quantized Copy only works with same qscheme");
     TORCH_CHECK(self.scalar_type() == src.scalar_type());
-    self.set_quantizer_(at::make_per_tensor_affine_quantizer(src.q_scale().toDouble(), src.q_zero_point().toLong(), src.scalar_type()));
+    self.set_quantizer_(at::make_per_tensor_affine_quantizer(src.q_scale(), src.q_zero_point(), src.scalar_type()));
   }
 
   auto builder = TensorIterator::Builder();
