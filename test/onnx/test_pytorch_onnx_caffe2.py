@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
+import pytest
 import numpy as np
 import sys
 import unittest
@@ -1740,7 +1741,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         y = (torch.randn(4, 5), (torch.randn(4, 5), torch.randn(4, 5)))
         self.run_model_test(NestedTupleModel(), train=False, input=(x, y), batch_size=BATCH_SIZE,
                             example_outputs=x + y[0] + y[1][0] + y[1][1])
-
+    @skip
     def test_topk(self):
         class TopKModel(torch.nn.Module):
             def forward(self, input):
@@ -1749,6 +1750,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         x = torch.arange(1., 6.)
         self.run_model_test(TopKModel(), train=False, input=x, batch_size=BATCH_SIZE)
 
+    @skip
     def test_topk_script(self):
         class TopKModel(torch.jit.ScriptModule):
             @torch.jit.script_method
