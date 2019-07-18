@@ -41,7 +41,7 @@ import onnx
 import caffe2.python.onnx.backend as c2
 
 from test_pytorch_common import skipIfTravis, skipIfNoLapack, skipIfNoCuda
-from test_pytorch_common import skipIfUnsupportedOpsetVersion
+from test_pytorch_common import skipIfUnsupportedOpsetVersion, skipIfUnsupportedMinOpsetVersion
 import verify
 
 skip = unittest.skip
@@ -667,6 +667,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         input = torch.empty(BATCH_SIZE, 10, 10).uniform_(4, 9)
         self.run_model_test(MyModel(), train=False, input=input, batch_size=BATCH_SIZE)
 
+    @skipIfUnsupportedMinOpsetVersion(9)
     def test_erf(self):
         class MyModel(torch.nn.Module):
             def __init__(self):
@@ -810,16 +811,19 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         x = torch.randn(20, 16, 50, 44, 30, requires_grad=True)
         self.run_model_test(model, train=False, input=x, batch_size=BATCH_SIZE)
 
+    @skipIfUnsupportedMinOpsetVersion(8)
     def test_adaptive_max_pool1D(self):
         model = torch.nn.AdaptiveMaxPool1d((5))
         x = torch.randn(20, 16, 50, requires_grad=True)
         self.run_model_test(model, train=False, input=x, batch_size=BATCH_SIZE)
 
+    @skipIfUnsupportedMinOpsetVersion(8)
     def test_adaptive_max_pool2D(self):
         model = torch.nn.AdaptiveMaxPool2d((5, 4))
         x = torch.randn(20, 16, 50, 32, requires_grad=True)
         self.run_model_test(model, train=False, input=x, batch_size=BATCH_SIZE)
 
+    @skipIfUnsupportedMinOpsetVersion(8)
     def test_adaptive_max_pool3D(self):
         model = torch.nn.AdaptiveMaxPool3d((5, 4, 3))
         x = torch.randn(20, 16, 50, 44, 30, requires_grad=True)
@@ -996,7 +1000,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         self.run_model_test(model, train=False, input=(x),
                             batch_size=BATCH_SIZE, use_gpu=False)
 
-    @skipIfUnsupportedOpsetVersion([10])
+    @skipIfUnsupportedOpsetVersion([7, 8, 10])
     def test_interpolate_upsample_dynamic_sizes(self):
         class MyModel(torch.nn.Module):
             def __init__(self):
@@ -1294,6 +1298,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         self.run_model_test(FullClass(), train=False, input=(x,), batch_size=BATCH_SIZE,
                             use_gpu=False, example_outputs=FullClass()(x))
 
+    @skipIfUnsupportedMinOpsetVersion(9)
     def test_where_functional(self):
         class WhereFunctional(torch.nn.Module):
             def forward(self, x):
@@ -1302,6 +1307,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         x = torch.randn(3, 4)
         self.run_model_test(WhereFunctional(), train=False, input=(x,), batch_size=BATCH_SIZE, use_gpu=False)
 
+    @skipIfUnsupportedMinOpsetVersion(9)
     def test_where_method(self):
         class WhereMethod(torch.nn.Module):
             def forward(self, x):
@@ -1356,6 +1362,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         self.run_model_test(RsubModel(), train=False, input=(x,),
                             batch_size=BATCH_SIZE, use_gpu=False)
 
+    @skipIfUnsupportedMinOpsetVersion(9)
     def test_isnan(self):
         class IsNaNModel(torch.nn.Module):
             def forward(self, input):
@@ -1364,6 +1371,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         x = torch.tensor([1.0, float('nan'), 2.0])
         self.run_model_test(IsNaNModel(), train=False, input=x, batch_size=BATCH_SIZE, use_gpu=False)
 
+    @skipIfUnsupportedMinOpsetVersion(9)
     def test_scatter(self):
         class ScatterModel(torch.nn.Module):
             def forward(self, input, indices, values):
@@ -1398,6 +1406,23 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
 
         x = torch.randn(4, 4, requires_grad=True)
         self.run_model_test(MaxModel(), train=False, input=x, batch_size=BATCH_SIZE)
+
+    def test_max_keepdim(self):
+        class MaxModel(torch.nn.Module):
+            def forward(self, input):
+                return torch.max(input, dim=1, keepdim=True)
+
+        x = torch.randn(4, 4, requires_grad=True)
+        self.run_model_test(MaxModel(), train=False, input=x, batch_size=BATCH_SIZE)
+
+    def test_max_tensors(self):
+        class MaxModel(torch.nn.Module):
+            def forward(self, input, other):
+                return torch.max(input, other)
+
+        x = torch.randn(4, 4, requires_grad=True)
+        y = torch.randn(4, 4, requires_grad=True)
+        self.run_model_test(MaxModel(), train=False, input=(x, y), batch_size=BATCH_SIZE)
 
     def test_min(self):
         class MinModel(torch.nn.Module):
@@ -1861,6 +1886,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         x = torch.randn(1, 2, 3)
         self.run_model_test(DropoutModel(), train=False, input=x, batch_size=BATCH_SIZE)
 
+    @skipIfUnsupportedMinOpsetVersion(9)
     def test_while(self):
         class WhileModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1921,6 +1947,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         self.run_model_test(model, train=False, input=(inputs,), batch_size=BATCH_SIZE,
                             example_outputs=(outputs,), use_gpu=False)  # TODO 'ONNXWhile' on CUDA
 
+    @skipIfUnsupportedMinOpsetVersion(9)
     def test_nested_loops(self):
         class NestedLoopsModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1948,6 +1975,24 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         model = SelectModel()
         inputs = torch.randn(3, 2, 1)
         self.run_model_test(model, train=False, input=(inputs, ), batch_size=BATCH_SIZE)
+
+
+    @skipIfUnsupportedMinOpsetVersion(9)
+    def test_masked_fill(self):
+        class MaskedFillModel(torch.nn.Module):
+            def forward(self, x):
+                mask = torch.tensor([[0, 0, 1], [1, 1, 0]], dtype=torch.uint8)
+                return x.masked_fill(mask, 2)
+
+        x = torch.zeros(4, 2, 3, requires_grad=True)
+        self.run_model_test(MaskedFillModel(), input=(x, ), train=False, batch_size=BATCH_SIZE)
+
+        class MaskedFillModel2(torch.nn.Module):
+            def forward(self, x):
+                return x.masked_fill(x > 3, -1)
+
+        x = torch.arange(16).view(2, 2, 4).to(torch.float32)
+        self.run_model_test(MaskedFillModel2(), input=(x, ), train=False, batch_size=BATCH_SIZE)
 
 # a bit of metaprogramming to set up all the rnn tests
 
@@ -2032,6 +2077,24 @@ setup_rnn_tests()
 TestCaffe2BackendEmbed_opset9 = type(str("TestCaffe2BackendEmbed_opset9"),
                                      (unittest.TestCase,),
                                      dict(TestCaffe2Backend_opset9.__dict__, embed_params=True))
+
+# opset 7 tests
+TestCaffe2Backend_opset7 = type(str("TestCaffe2Backend_opset7"),
+                                (unittest.TestCase,),
+                                dict(TestCaffe2Backend_opset9.__dict__, opset_version=7))
+TestCaffe2BackendEmbed_opset7 = type(str("TestCaffe2BackendEmbed_opset7"),
+                                     (unittest.TestCase,),
+                                     dict(TestCaffe2Backend_opset9.__dict__,
+                                          embed_params=True, opset_version=7))
+
+# opset 8 tests
+TestCaffe2Backend_opset8 = type(str("TestCaffe2Backend_opset8"),
+                                (unittest.TestCase,),
+                                dict(TestCaffe2Backend_opset9.__dict__, opset_version=8))
+TestCaffe2BackendEmbed_opset8 = type(str("TestCaffe2BackendEmbed_opset8"),
+                                     (unittest.TestCase,),
+                                     dict(TestCaffe2Backend_opset9.__dict__,
+                                          embed_params=True, opset_version=8))
 
 # opset 10 tests
 TestCaffe2Backend_opset10 = type(str("TestCaffe2Backend_opset10"),
