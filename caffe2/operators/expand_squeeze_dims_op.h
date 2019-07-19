@@ -92,19 +92,19 @@ class SqueezeOp : public Operator<Context> {
     size_t j = 0;
     std::vector<int> newDims;
     for (size_t i = 0; i < inputDims.size(); ++i) {
-//      if (j < dims.size() && dims[j] == i) {
-//        CAFFE_ENFORCE_EQ(
-//            inputDims[i],
-//            1,
-//            "Dimension ",
-//            i,
-//            " of input must be 1",
-//            " instead of ",
-//            inputDims[i],
-//            ".");
-//        ++j;
-//        continue;
-//      }
+      if (j < dims.size() && dims[j] == i) {
+        CAFFE_ENFORCE_EQ(
+            inputDims[i],
+            1,
+            "Dimension ",
+            i,
+            " of input must be 1",
+            " instead of ",
+            inputDims[i],
+            ".");
+        ++j;
+        continue;
+      }
       newDims.push_back(inputDims.at(i));
     }
     return newDims;

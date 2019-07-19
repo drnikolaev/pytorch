@@ -329,7 +329,7 @@ def _model_to_graph(model, args, verbose=False, training=False,
     graph = _optimize_graph(graph, operator_export_type,
                             _disable_torch_constant_prop=_disable_torch_constant_prop)
 
-    print(graph)
+    # print(graph)
 
     if isinstance(model, torch.jit.ScriptModule) or isinstance(model, torch.jit.Function):
         out_vars, _ = torch.jit._flatten(tuple(example_outputs))
@@ -352,12 +352,10 @@ def _model_to_graph(model, args, verbose=False, training=False,
     param_names = input_and_param_names[len(input_and_param_names) - len(params):]
     params_dict = dict(zip(param_names, params))
 
-    print("1111111111111111111111111111", graph)
-    # if do_constant_folding and _export_onnx_opset_version in [9, 10]:
-    #     params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict,
-    #                                                         _export_onnx_opset_version)
-    #     print("22222222222222222222222", graph)
-    #     torch._C._jit_pass_dce_allow_deleting_nodes_with_side_effects(graph)
+    if do_constant_folding and _export_onnx_opset_version in [9, 10]:
+        params_dict = torch._C._jit_pass_onnx_constant_fold(graph, params_dict,
+                                                            _export_onnx_opset_version)
+        torch._C._jit_pass_dce_allow_deleting_nodes_with_side_effects(graph)
 
     # For ONNX opset < 9, constants only have three data types: float16, float, double.
     # In this pass transform constants of other data types to float/double + cast operator.
@@ -366,7 +364,6 @@ def _model_to_graph(model, args, verbose=False, training=False,
 
     if verbose:
         print(graph)
-    print("333333333333333333333", graph)
 
     return graph, params_dict, torch_out
 

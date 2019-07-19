@@ -322,8 +322,8 @@ def embedding_bag(g,
 
 def size(g, self, dim):
     full_shape = g.op("Shape", self)
-    return select(g, full_shape, 0, dim)
-    # return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
+    # return select(g, full_shape, 0, dim)
+    return select(g, full_shape, g.op("Constant", value_t=torch.tensor([0])), dim)
 
 
 @parse_args('v', 'i', 'i')
@@ -397,36 +397,16 @@ def split_with_sizes(g, self, split_sizes, dim):
 
 @parse_args('v', 'i', 'v')
 def select(g, self, dim, index):
-    index_val = _parse_arg(index, 'i')
-    if dim > -1 and index_val > -1 or dim > 1:
-    #if dim > 1:
+    if dim > 1:
         # TODO: this is a temporary hack because of the implementation details
         # of Gather in caffe2. We need to change this as soon as possible.
         # TODO: this breaks if index == -1
-        # index_val = _parse_arg(index, 'i')
-
-# def _slice_helper(g, input, axes, starts, ends, steps=None, dynamic_slice=False):
-
-        if sym_help._export_onnx_opset_version > 9:
-            # axes = g.op("Constant", value_t=torch.tensor(dim))
-            # starts = g.op("Constant", value_t=torch.tensor(index_val))
-            # ends = g.op("Constant", value_t=torch.tensor(index_val+1))
-            #g.op("Slice", self, axes_i=[dim], starts_i=[index_val], ends_i=[index_val + 1])
-
-            slice_node = sym_help._slice_helper(g, self, [dim], [index_val], [index_val+1])
-            return slice_node
-
-        else:
-            slice_node = sym_help._slice_helper(g, self, axes=[dim],
+        index_val = _parse_arg(index, 'i')
+        slice_node = sym_help._slice_helper(g, self, axes=[dim],
                                             starts=[index_val], ends=[index_val + 1])
-        # slice_node = g.op("Slice", self, axes_i=[dim], starts_i=[index_val], ends_i=[index_val + 1])
-
-
-            return g.op("Squeeze", slice_node, axes_i=[dim])
+        return g.op("Squeeze", slice_node, axes_i=[dim])
     else:
         return g.op("Gather", self, index, axis_i=dim)
-        # index_val = _parse_arg(index, 'i')
-        # return g.op("Slice", self, axes_i=[dim], starts_i=[index_val], ends_i=[index_val + 1])
 
 
 def squeeze(g, self, dim=None):

@@ -216,7 +216,7 @@ c10::optional<at::Tensor> runTorchBackendForOnnx(
     updated_val =
         at::cat(at::TensorList(inputTensorValues), node->i(attr::axis));
     return c10::optional<at::Tensor>(updated_val);
-  }/* else if (node->kind() == onnx::Unsqueeze) {
+  } else if (node->kind() == onnx::Unsqueeze) {
     assert(inputTensorValues.size() == 1);
     if (!node->hasAttributeS("axes")) {
       return c10::nullopt;
@@ -226,7 +226,7 @@ c10::optional<at::Tensor> runTorchBackendForOnnx(
       updated_val = at::unsqueeze(updated_val, axis);
     }
     return c10::optional<at::Tensor>(updated_val);
-  }*/ else if (node->kind() == onnx::Transpose) {
+  } else if (node->kind() == onnx::Transpose) {
     assert(inputTensorValues.size() == 1);
     if (!node->hasAttributeS("perm")) {
       return c10::nullopt;
@@ -463,34 +463,34 @@ void ConstantFoldONNX(Block* b, ParamMap& paramsDict, int opset_version) {
 ...
   */
 
-//  int axis = 0;
-//  std::vector<int64_t> values;
-//  for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
-//    std::vector<std::vector<Node*>> removeNodes;
-//    auto node = *it;
-//    if (node->kind() == onnx::Concat && node->hasUses()) {
-//      values = collectFoldables(axis, 0, node, removeNodes);
-//      if (!values.empty()) {
-//        at::Tensor updatedVal = at::tensor(values,
-//            at::TensorOptions().dtype(at::kLong).is_variable(true).layout(at::kStrided)
-//            .device(at::kCPU));
-//        Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
-//        new_shape->t_(attr::value, updatedVal);
-//        auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
-//        newSourceNodeOutput->inferTypeFrom(updatedVal);
-//        node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
-//        node->removeAllInputs();
-//        for (auto& nvec : removeNodes) {
-//          for (auto& n : nvec) {
-//            if (node != n) {
-//              n->destroy();
-//            }
-//          }
-//        }
-//        it.destroyCurrent();
-//      }
-//    }
-//  } // End of the special handler
+  int axis = 0;
+  std::vector<int64_t> values;
+  for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
+    std::vector<std::vector<Node*>> removeNodes;
+    auto node = *it;
+    if (node->kind() == onnx::Concat && node->hasUses()) {
+      values = collectFoldables(axis, 0, node, removeNodes);
+      if (!values.empty()) {
+        at::Tensor updatedVal = at::tensor(values,
+            at::TensorOptions().dtype(at::kLong).is_variable(true).layout(at::kStrided)
+            .device(at::kCPU));
+        Node* new_shape = b->owningGraph()->create(onnx::Constant, 1);
+        new_shape->t_(attr::value, updatedVal);
+        auto newSourceNodeOutput = new_shape->insertAfter(node)->output();
+        newSourceNodeOutput->inferTypeFrom(updatedVal);
+        node->outputs().at(0)->replaceAllUsesWith(newSourceNodeOutput);
+        node->removeAllInputs();
+        for (auto& nvec : removeNodes) {
+          for (auto& n : nvec) {
+            if (node != n) {
+              n->destroy();
+            }
+          }
+        }
+        it.destroyCurrent();
+      }
+    }
+  } // End of the special handler
 
   // Default implementation
   auto valsToParamsMap = buildValueToParamsMap(b, paramsDict);

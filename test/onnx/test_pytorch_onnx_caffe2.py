@@ -3,7 +3,6 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
-import pytest
 import numpy as np
 import sys
 import unittest
@@ -468,7 +467,6 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
 
     @unittest.skipIf(not torch.cuda.is_available(),
                      "model on net has cuda in it, awaiting fix")
-    @skip("Unexpected key(s) in state_dict")
     def test_densenet(self):
         state_dict = model_zoo.load_url(model_urls['densenet121'], progress=False)
         self.run_model_test(densenet121(), train=False, batch_size=BATCH_SIZE,
@@ -510,7 +508,6 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
     @skipIfTravis
     @skipIfNoLapack
     @skipIfNoCuda
-    @skip  # TODO
     def test_super_resolution(self):
         super_resolution_net = SuperResolutionNet(upscale_factor=3)
         state_dict = model_zoo.load_url(model_urls['super_resolution'], progress=False)
@@ -1503,21 +1500,6 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         caffe2_out = prepared.run(inputs=[x.cpu().numpy()])
         self.assertEqual(caffe2_out[0].shape, x.shape)
 
-
-    """
-    E               output {
-    E                 name: "8"
-    E                 type {
-    E                   tensor_type {
-    E                     elem_type: 1
-    E                     shape {
-    E                       dim {
-    E           -             dim_value: 0
-    E           ?                        ^
-    E           +             dim_value: 2
-    E           ?                        ^
-    """
-    @skipIfEmbed  # TODO - error above in embedded case only
     def test_traced_ints(self):
         A = 4
         H = 10
@@ -1766,7 +1748,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         y = (torch.randn(4, 5), (torch.randn(4, 5), torch.randn(4, 5)))
         self.run_model_test(NestedTupleModel(), train=False, input=(x, y), batch_size=BATCH_SIZE,
                             example_outputs=x + y[0] + y[1][0] + y[1][1])
-    @skip
+
     def test_topk(self):
         class TopKModel(torch.nn.Module):
             def forward(self, input):
@@ -1775,7 +1757,6 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
         x = torch.arange(1., 6.)
         self.run_model_test(TopKModel(), train=False, input=x, batch_size=BATCH_SIZE)
 
-    @skip
     def test_topk_script(self):
         class TopKModel(torch.jit.ScriptModule):
             @torch.jit.script_method
@@ -1807,8 +1788,7 @@ class TestCaffe2Backend_opset9(unittest.TestCase):
                 return torch._dim_arange(input, 1)
 
         x = torch.ones(5, 6)
-        # TODO fails on GPU
-        self.run_model_test(DimArange(), train=False, input=x, batch_size=BATCH_SIZE, use_gpu=False)
+        self.run_model_test(DimArange(), train=False, input=x, batch_size=BATCH_SIZE)
 
     def test_log2(self):
         class Log2Model(torch.nn.Module):
