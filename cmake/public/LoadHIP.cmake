@@ -38,13 +38,6 @@ ELSE()
   SET(ROCBLAS_PATH $ENV{ROCBLAS_PATH})
 ENDIF()
 
-# ROCSPARSE_PATH
-IF(NOT DEFINED ENV{ROCSPARSE_PATH})
-  SET(ROCSPARSE_PATH ${ROCM_PATH}/rocsparse)
-ELSE()
-  SET(ROCSPARSE_PATH $ENV{ROCSPARSE_PATH})
-ENDIF()
-
 # ROCFFT_PATH
 IF(NOT DEFINED ENV{ROCFFT_PATH})
   SET(ROCFFT_PATH ${ROCM_PATH}/rocfft)
@@ -80,13 +73,6 @@ ELSE()
   SET(ROCRAND_PATH $ENV{ROCRAND_PATH})
 ENDIF()
 
-# MIOPENGEMM
-IF(NOT DEFINED ENV{MIOPENGEMM_PATH})
-  SET(MIOPENGEMM_PATH ${ROCM_PATH}/miopengemm)
-ELSE()
-  SET(MIOPENGEMM_PATH $ENV{MIOPENGEMM_PATH})
-ENDIF()
-
 # MIOPEN_PATH
 IF(NOT DEFINED ENV{MIOPEN_PATH})
   SET(MIOPEN_PATH ${ROCM_PATH}/miopen)
@@ -94,10 +80,10 @@ ELSE()
   SET(MIOPEN_PATH $ENV{MIOPEN_PATH})
 ENDIF()
 
-IF(NOT DEFINED ENV{HCC_AMDGPU_TARGET})
-  SET(HCC_AMDGPU_TARGET gfx900)
+IF(NOT DEFINED ENV{PYTORCH_ROCM_ARCH})
+  SET(PYTORCH_ROCM_ARCH gfx803;gfx900;gfx906)
 ELSE()
-  SET(HCC_AMDGPU_TARGET $ENV{HCC_AMDGPU_TARGET})
+  SET(PYTORCH_ROCM_ARCH $ENV{PYTORCH_ROCM_ARCH})
 ENDIF()
 
 # Add HIP to the CMAKE Module Path
@@ -128,36 +114,23 @@ IF(HIP_FOUND)
 
   message("\n***** Library versions from cmake find_package *****\n")
 
-  ### Remove setting of Flags when FindHIP.CMake PR #558 is accepted.###
-  # https://github.com/ROCm-Developer-Tools/HIP/pull/558 #
-  set(CMAKE_SHARED_LIBRARY_SONAME_HIP_FLAG ${CMAKE_SHARED_LIBRARY_SONAME_CXX_FLAG})
-  set(CMAKE_HIP_LINK_EXECUTABLE "${HIP_HIPCC_CMAKE_LINKER_HELPER} ${HCC_PATH} <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>" )
-  set(CMAKE_HIP_CREATE_SHARED_LIBRARY "${HIP_HIPCC_CMAKE_LINKER_HELPER} ${HCC_PATH} <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> <SONAME_FLAG><TARGET_SONAME> -o <TARGET> <LINK_LIBRARIES> -shared" )
-  set(CMAKE_HIP_CREATE_SHARED_MODULE "${HIP_HIPCC_CMAKE_LINKER_HELPER} ${HCC_PATH} <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> <SONAME_FLAG><TARGET_SONAME> -o <TARGET> <LINK_LIBRARIES> -shared" )
-  set(CMAKE_HIP_ARCHIVE_CREATE ${CMAKE_CXX_ARCHIVE_CREATE})
-  set(CMAKE_HIP_ARCHIVE_APPEND ${CMAKE_CXX_ARCHIVE_APPEND})
-  set(CMAKE_HIP_ARCHIVE_FINISH ${CMAKE_CXX_ARCHIVE_FINISH})
-  SET(CMAKE_HCC_FLAGS_DEBUG ${CMAKE_CXX_FLAGS_DEBUG})
-  SET(CMAKE_HCC_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE})
+  set(CMAKE_HCC_FLAGS_DEBUG ${CMAKE_CXX_FLAGS_DEBUG})
+  set(CMAKE_HCC_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE})
   ### Remove setting of Flags when FindHIP.CMake PR #558 is accepted.###
 
   set(rocrand_DIR ${ROCRAND_PATH}/lib/cmake/rocrand)
   set(hiprand_DIR ${HIPRAND_PATH}/lib/cmake/hiprand)
   set(rocblas_DIR ${ROCBLAS_PATH}/lib/cmake/rocblas)
-  set(miopengemm_DIR ${MIOPENGEMM_PATH}/lib/cmake/miopengemm)
   set(miopen_DIR ${MIOPEN_PATH}/lib/cmake/miopen)
   set(rocfft_DIR ${ROCFFT_PATH}/lib/cmake/rocfft)
   set(hipsparse_DIR ${HIPSPARSE_PATH}/lib/cmake/hipsparse)
-  set(rocsparse_DIR ${ROCSPARSE_PATH}/lib/cmake/rocsparse)
 
-  find_package_and_print_version(rocrand REQUIRED)
+  find_package_and_print_version(rocrand REQUIRED) 
   find_package_and_print_version(hiprand REQUIRED)
   find_package_and_print_version(rocblas REQUIRED)
   find_package_and_print_version(miopen REQUIRED)
-  find_package_and_print_version(miopengemm REQUIRED)
   find_package_and_print_version(rocfft REQUIRED)
-  #find_package_and_print_version(hipsparse REQUIRED)
-  find_package_and_print_version(rocsparse REQUIRED)
+  find_package_and_print_version(hipsparse REQUIRED)
 
   # TODO: hip_hcc has an interface include flag "-hc" which is only
   # recognizable by hcc, but not gcc and clang. Right now in our
@@ -167,9 +140,6 @@ IF(HIP_FOUND)
   # TODO: miopen_LIBRARIES should return fullpath to the library file,
   # however currently it's just the lib name
   FIND_LIBRARY(PYTORCH_MIOPEN_LIBRARIES ${miopen_LIBRARIES} HINTS ${MIOPEN_PATH}/lib)
-  FIND_LIBRARY(hiprand_LIBRARIES hiprand HINTS ${HIPRAND_PATH}/lib)
-  FIND_LIBRARY(rocsparse_LIBRARIES rocsparse HINTS ${ROCSPARSE_PATH}/lib)
-  FIND_LIBRARY(hipsparse_LIBRARIES hipsparse HINTS ${HIPSPARSE_PATH}/lib)
 
 
   # Necessary includes for building PyTorch since we include HIP headers that depend on hcc/hsa headers.

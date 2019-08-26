@@ -37,7 +37,7 @@ class SignalTest {
   }
 
   std::shared_ptr<::c10d::ProcessGroup::Work> run(int rank, int size) {
-    auto store = std::make_shared<::c10d::FileStore>(path_);
+    auto store = std::make_shared<::c10d::FileStore>(path_, size);
 
     // Use tiny timeout to make this test run fast
     ::c10d::ProcessGroupGloo::Options options;
@@ -56,7 +56,9 @@ class SignalTest {
     std::shared_ptr<::c10d::ProcessGroup::Work> work;
     while (true) {
       work = pg.allreduce(tensors);
-      if (!work->wait()) {
+      try {
+        work->wait();
+      } catch (const std::exception& e) {
         break;
       }
       sem_.post();
@@ -120,7 +122,7 @@ class CollectiveTest {
   }
 
   void start(int rank, int size) {
-    auto store = std::make_shared<::c10d::FileStore>(path_);
+    auto store = std::make_shared<::c10d::FileStore>(path_, size);
 
     // Use tiny timeout to make this test run fast
     ::c10d::ProcessGroupGloo::Options options;
@@ -152,7 +154,7 @@ std::vector<std::vector<at::Tensor>> copyTensors(
   return outputs;
 }
 
-void testAllreduce(const std::string& path, const at::Backend b) {
+void testAllreduce(const std::string& path, const at::DeviceType b) {
   const auto size = 4;
   auto tests = CollectiveTest::initialize(path, size);
 
@@ -171,9 +173,7 @@ void testAllreduce(const std::string& path, const at::Backend b) {
 
   // Wait for work to complete
   for (auto i = 0; i < size; i++) {
-    if (!work[i]->wait()) {
-      throw work[i]->exception();
-    }
+    work[i]->wait();
   }
 
   // Verify outputs
@@ -181,7 +181,7 @@ void testAllreduce(const std::string& path, const at::Backend b) {
   auto outputs = copyTensors(inputs);
   for (auto i = 0; i < size; i++) {
     auto& tensor = outputs[i][0];
-    auto data = tensor.data<float>();
+    auto data = tensor.data_ptr<float>();
     for (auto j = 0; j < tensor.numel(); j++) {
       if (data[j] != expected) {
         throw std::runtime_error("BOOM!");
@@ -190,7 +190,7 @@ void testAllreduce(const std::string& path, const at::Backend b) {
   }
 }
 
-void testBroadcast(const std::string& path, const at::Backend b) {
+void testBroadcast(const std::string& path, const at::DeviceType b) {
   const auto size = 2;
   const auto stride = 2;
   auto tests = CollectiveTest::initialize(path, size);
@@ -206,7 +206,7 @@ void testBroadcast(const std::string& path, const at::Backend b) {
         // This won't work if we ever support sparse CUDA
         at::OptionalDeviceGuard deviceGuard;
         for (auto l = 0; l < stride; l++) {
-          if (b == at::Backend::CUDA) {
+          if (b == at::DeviceType::CUDA) {
             deviceGuard.reset_device(at::Device(at::kCUDA, l));
           }
           inputs[k][l] = at::ones({16, 16}, b) * (k * stride + l);
@@ -225,9 +225,7 @@ void testBroadcast(const std::string& path, const at::Backend b) {
 
       // Wait for work to complete
       for (auto i = 0; i < size; i++) {
-        if (!work[i]->wait()) {
-          throw work[i]->exception();
-        }
+        work[i]->wait();
       }
 
       // Verify outputs
@@ -236,7 +234,7 @@ void testBroadcast(const std::string& path, const at::Backend b) {
       for (auto k = 0; k < size; k++) {
         for (auto l = 0; l < stride; l++) {
           auto& tensor = outputs[k][l];
-          auto data = tensor.data<float>();
+          auto data = tensor.data_ptr<float>();
           for (auto n = 0; n < tensor.numel(); n++) {
             if (data[n] != expected) {
               throw std::runtime_error("BOOM!");
@@ -260,9 +258,7 @@ void testBarrier(const std::string& path) {
 
   // Wait for work to complete
   for (auto i = 0; i < size; i++) {
-    if (!work[i]->wait()) {
-      throw work[i]->exception();
-    }
+    work[i]->wait();
   }
 }
 
@@ -270,38 +266,44 @@ int main(int argc, char** argv) {
   {
     TemporaryFile file;
     auto work = testSignal(file.path, SIGSTOP);
-    auto& ex = work->exception();
-    std::cout << "SIGSTOP test got: " << ex.what() << std::endl;
+    try {
+      std::rethrow_exception(work->exception());
+    } catch (const std::exception& ex) {
+      std::cout << "SIGSTOP test got: " << ex.what() << std::endl;
+    }
   }
 
   {
     TemporaryFile file;
     auto work = testSignal(file.path, SIGKILL);
-    auto& ex = work->exception();
-    std::cout << "SIGKILL test got: " << ex.what() << std::endl;
+    try {
+      std::rethrow_exception(work->exception());
+    } catch (const std::exception& ex) {
+      std::cout << "SIGKILL test got: " << ex.what() << std::endl;
+    }
   }
 
   {
     TemporaryFile file;
-    testAllreduce(file.path, at::Backend::CPU);
+    testAllreduce(file.path, at::DeviceType::CPU);
   }
 
 #ifdef USE_CUDA
   {
     TemporaryFile file;
-    testAllreduce(file.path, at::Backend::CUDA);
+    testAllreduce(file.path, at::DeviceType::CUDA);
   }
 #endif
 
   {
     TemporaryFile file;
-    testBroadcast(file.path, at::Backend::CPU);
+    testBroadcast(file.path, at::DeviceType::CPU);
   }
 
 #ifdef USE_CUDA
   {
     TemporaryFile file;
-    testBroadcast(file.path, at::Backend::CUDA);
+    testBroadcast(file.path, at::DeviceType::CUDA);
   }
 #endif
 

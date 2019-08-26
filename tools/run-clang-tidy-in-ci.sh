@@ -3,11 +3,10 @@
 set -ex
 
 BASE_BRANCH=master
-# From https://docs.travis-ci.com/user/environment-variables
-if [[ $TRAVIS ]]; then
+if [[ $SYSTEM_PULLREQUEST_TARGETBRANCH ]]; then
   git remote add upstream https://github.com/pytorch/pytorch
-  git fetch upstream "$TRAVIS_BRANCH"
-  BASE_BRANCH="upstream/$TRAVIS_BRANCH"
+  git fetch upstream "$SYSTEM_PULLREQUEST_TARGETBRANCH"
+  BASE_BRANCH="upstream/$SYSTEM_PULLREQUEST_TARGETBRANCH"
 fi
 
 if [[ ! -d build ]]; then
@@ -16,7 +15,7 @@ if [[ ! -d build ]]; then
   mkdir build
   pushd build
   # We really only need compile_commands.json, so no need to build!
-  time cmake -DBUILD_TORCH=ON ..
+  time cmake ..
   popd
 
   # Generate ATen files.
@@ -36,13 +35,13 @@ if [[ ! -d build ]]; then
 fi
 
 # Run Clang-Tidy
-# The negative filters below are to exclude files that include onnx_pb.h,
-# otherwise we'd have to build ONNX protos as part of this CI job.
-time python tools/clang_tidy.py    \
-  --verbose                        \
-  --paths torch/csrc               \
-  --diff "$BASE_BRANCH"            \
-  -g"-torch/csrc/jit/init.cpp"     \
-  -g"-torch/csrc/jit/export.cpp"   \
-  -g"-torch/csrc/jit/import.cpp"   \
+# The negative filters below are to exclude files that include onnx_pb.h or
+# caffe2_pb.h, otherwise we'd have to build protos as part of this CI job.
+time python tools/clang_tidy.py             \
+  --verbose                                 \
+  --paths torch/csrc/                       \
+  --diff "$BASE_BRANCH"                     \
+  -g"-torch/csrc/jit/export.cpp"            \
+  -g"-torch/csrc/jit/import.cpp"            \
+  -g"-torch/csrc/jit/netdef_converter.cpp"  \
   "$@"

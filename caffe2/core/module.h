@@ -14,7 +14,7 @@
 #include <mutex>
 
 #include "caffe2/core/common.h"
-#include "caffe2/core/typeid.h"
+#include <c10/util/typeid.h>
 
 namespace caffe2 {
 
@@ -26,10 +26,6 @@ namespace caffe2 {
 class CAFFE2_API ModuleSchema {
  public:
   ModuleSchema(const char* name, const char* description);
-
- private:
-  const char* name_;
-  const char* description_;
 };
 
 

@@ -2,21 +2,14 @@
 #define THC_TENSORMATH_POINTWISE_CUH
 
 #include <type_traits>
-#include "THCTensorMath.h"
-#include "THCGeneral.h"
-#include "TH/THHalf.h"
-#include "THCTensorCopy.h"
-#include "THCApply.cuh"
-#include "THCNumerics.cuh"
-#include "THCReduce.cuh"
+#include <THC/THCTensorMath.h>
+#include <THC/THCGeneral.h>
+#include <TH/THHalf.h>
+#include <THC/THCTensorCopy.h>
+#include <THC/THCApply.cuh>
+#include <THC/THCNumerics.cuh>
+#include <THC/THCReduce.cuh>
 
-
-template <typename T>
-struct TensorATan2Op {
-  __device__ __forceinline__ void operator()(T* out, T* a, T* b) {
-    *out = THCNumerics<T>::atan2(*a, *b);
-  }
-};
 
 template <typename T>
 struct TensorSigmoidOp {
@@ -306,34 +299,17 @@ template <typename T>
 struct TensorClampOp {
   TensorClampOp(T min, T max) : minValue(min), maxValue(max) {}
   __device__ __forceinline__ void operator()(T* out, T* in) {
-    T val = THCNumerics<T>::lt(*in, maxValue) ? *in : maxValue;
-    *out = THCNumerics<T>::gt(minValue, val) ? minValue : val;
+    T val = THCNumerics<T>::lt(*in, minValue) ? minValue : *in;
+    *out = THCNumerics<T>::gt(val, maxValue) ? maxValue : val;
   }
 
   __device__ __forceinline__ void operator()(T* v) {
-    T val = THCNumerics<T>::lt(*v, maxValue) ? *v : maxValue;
-    *v = THCNumerics<T>::gt(minValue, val) ? minValue : val;
+    T val = THCNumerics<T>::lt(*v, minValue) ? minValue : *v;
+    *v = THCNumerics<T>::gt(val, maxValue) ? maxValue : val;
   }
 
   const T minValue;
   const T maxValue;
-};
-
-template <typename T>
-struct TensorLerpOp {
-  TensorLerpOp(T w) : w(w) {}
-
-  __device__ __forceinline__ void operator()(T *out, T *a, T *b) {
-    *out = THCNumerics<T>::add(
-      *a,
-      THCNumerics<T>::mul(
-          w,
-          THCNumerics<T>::sub(*b, *a)
-        )
-    );
-  }
-
-  const T w;
 };
 
 template <typename T>
@@ -411,40 +387,6 @@ struct TensorMinValueOp {
 
   __device__ __forceinline__ void operator()(T* out, T* in) {
     *out = THCNumerics<T>::gt(*in, val) ? val : *in;  // this order propagates NaN
-  }
-
-  T val;
-};
-
-template <typename T>
-struct TensorAddCMulOp {
-  TensorAddCMulOp(T v) : val(v) {}
-
-  __device__ __forceinline__ void operator()(T* out, T* in1, T* in2) {
-    *out = THCNumerics<T>::add(
-      *out,
-      THCNumerics<T>::mul(
-        val,
-        THCNumerics<T>::mul(*in1, *in2)
-      )
-    );
-  }
-
-  T val;
-};
-
-template <typename T>
-struct TensorAddCDivOp {
-  TensorAddCDivOp(T v) : val(v) {}
-
-  __device__ __forceinline__ void operator()(T* out, T* in1, T* in2) {
-    *out = THCNumerics<T>::add(
-      *out,
-      THCNumerics<T>::mul(
-        val,
-        THCNumerics<T>::div(*in1, *in2)
-      )
-    );
   }
 
   T val;

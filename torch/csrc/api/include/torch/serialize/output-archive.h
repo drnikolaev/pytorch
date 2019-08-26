@@ -1,5 +1,8 @@
 #pragma once
 
+#include <torch/csrc/WindowsTorchApiMacro.h>
+#include <torch/csrc/jit/script/module.h>
+
 #include <iosfwd>
 #include <memory>
 #include <string>
@@ -20,10 +23,10 @@ struct Module;
 
 namespace torch {
 namespace serialize {
-class OutputArchive final {
+class TORCH_API OutputArchive final {
  public:
-  /// Default-constructs the `OutputArchive`.
-  OutputArchive();
+  explicit OutputArchive(std::shared_ptr<jit::script::CompilationUnit> cu);
+  explicit OutputArchive() : cu_(std::make_shared<jit::script::CompilationUnit>()) {}
 
   // Move is allowed.
   OutputArchive(OutputArchive&&) = default;
@@ -32,6 +35,10 @@ class OutputArchive final {
   // Copy is disallowed.
   OutputArchive(OutputArchive&) = delete;
   OutputArchive& operator=(OutputArchive&) = delete;
+
+  std::shared_ptr<jit::script::CompilationUnit> compilation_unit() const {
+    return cu_;
+  }
 
   /// Writes a `(key, tensor)` pair to the `OutputArchive`, and marks it as
   /// being or not being a buffer (non-differentiable tensor).
@@ -61,7 +68,8 @@ class OutputArchive final {
   }
 
  private:
-  std::shared_ptr<jit::script::Module> module_;
+  std::shared_ptr<jit::script::CompilationUnit> cu_;
+  jit::script::Module module_;
 };
 } // namespace serialize
 } // namespace torch

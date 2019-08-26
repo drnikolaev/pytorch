@@ -1,15 +1,15 @@
-#include "python_nccl.h"
+#include <torch/csrc/cuda/python_nccl.h>
 
-#include "nccl.h"
-#include "torch/csrc/DynamicTypes.h"
-#include "torch/csrc/Exceptions.h"
-#include "torch/csrc/THP.h"
-#include "torch/csrc/Types.h"
-#include "torch/csrc/cuda/THCP.h"
-#include "torch/csrc/cuda/nccl.h"
-#include "torch/csrc/utils/functional.h"
+#include <torch/csrc/cuda/nccl.h>
+#include <torch/csrc/DynamicTypes.h>
+#include <torch/csrc/Exceptions.h>
+#include <torch/csrc/THP.h>
+#include <torch/csrc/Types.h>
+#include <torch/csrc/cuda/THCP.h>
+#include <torch/csrc/cuda/nccl.h>
+#include <ATen/core/functional.h>
 
-#include <ATen/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAGuard.h>
 
 #include <nccl.h>
 
@@ -188,14 +188,13 @@ PyObject* THCPModule_nccl_all_reduce(PyObject* self, PyObject* args) {
     _check_inputs(inputs, outputs, 1, 1);
     size_t len = inputs.size();
 
-    ncclDataType_t data_type = _get_data_type(inputs[0].type());
+    ncclDataType_t data_type = _get_data_type(inputs[0]);
 
     int64_t count = inputs[0].numel();
-    std::lock_guard<std::mutex> lock(*(THCCachingAllocator_getCudaFreeMutex()));
+    AutoNcclGroup nccl_group_guard;
     auto comms = user_comms.empty() ? _get_communicators(inputs)
                                     : ArrayRef<ncclComm_t>(user_comms);
     at::cuda::OptionalCUDAGuard device_guard;
-    AutoNcclGroup nccl_group_guard;
     for (size_t i = 0; i < len; i++) {
       int device = inputs[i].get_device();
       device_guard.set_index(device);
@@ -268,14 +267,13 @@ PyObject* THCPModule_nccl_all_gather(PyObject* self, PyObject* args) {
     size_t len = inputs.size();
     _check_inputs(inputs, outputs, len, 1);
 
-    ncclDataType_t data_type = _get_data_type(inputs[0].type());
+    ncclDataType_t data_type = _get_data_type(inputs[0]);
 
     int64_t count = inputs[0].numel();
-    std::lock_guard<std::mutex> lock(*(THCCachingAllocator_getCudaFreeMutex()));
+    AutoNcclGroup nccl_group_guard;
     auto comms = user_comms.empty() ? _get_communicators(inputs)
                                     : ArrayRef<ncclComm_t>(user_comms);
     at::cuda::OptionalCUDAGuard device_guard;
-    AutoNcclGroup nccl_group_guard;
     for (size_t i = 0; i < len; i++) {
       int device = inputs[i].get_device();
       device_guard.set_index(device);
@@ -331,14 +329,13 @@ PyObject* THCPModule_nccl_reduce_scatter(PyObject* self, PyObject* args) {
     size_t len = inputs.size();
     _check_inputs(inputs, outputs, 1, len);
 
-    ncclDataType_t data_type = _get_data_type(inputs[0].type());
+    ncclDataType_t data_type = _get_data_type(inputs[0]);
 
     int64_t count = inputs[0].numel() / len;
-    std::lock_guard<std::mutex> lock(*(THCCachingAllocator_getCudaFreeMutex()));
+    AutoNcclGroup nccl_group_guard;
     auto comms = user_comms.empty() ? _get_communicators(inputs)
                                     : ArrayRef<ncclComm_t>(user_comms);
     at::cuda::OptionalCUDAGuard device_guard;
-    AutoNcclGroup nccl_group_guard;
     for (size_t i = 0; i < len; i++) {
       int device = inputs[i].get_device();
       device_guard.set_index(device);
@@ -374,7 +371,7 @@ static std::vector<at::Tensor> extract_tensors(PyObject* obj) {
           "expected Tensor at %d (got %s)", (int)i, Py_TYPE(item)->tp_name);
     }
     auto var = (THPVariable*)item;
-    list.emplace_back(var->cdata.data());
+    list.emplace_back(var->cdata);
   }
   return list;
 }

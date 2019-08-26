@@ -1,21 +1,22 @@
 #pragma once
 
-#include "torch/csrc/autograd/function.h"
-#include "torch/csrc/autograd/variable.h"
+#include <torch/csrc/autograd/function.h>
+#include <torch/csrc/autograd/variable.h>
+#include <torch/csrc/WindowsTorchApiMacro.h>
 
 #include <ATen/TensorGeometry.h>
-#include "ATen/Type.h"
-#include "c10/util/Optional.h"
+#include <ATen/core/DeprecatedTypeProperties.h>
+#include <c10/util/Optional.h>
 
 #include <cstdint>
 #include <memory>
 
 namespace torch { namespace autograd {
 
-struct CopyBackwards : public Function {
+struct TORCH_API CopyBackwards : public Node {
   variable_list apply(variable_list&& grads) override;
 
-  at::Type *src_type = nullptr; // initialized for safety.
+  at::DeprecatedTypeProperties *src_type = nullptr; // initialized for safety.
   at::Device src_device = at::kCPU;
 };
 
@@ -26,18 +27,18 @@ struct CopyBackwards : public Function {
 // grad_fn is updated to become a `CopySlice` wrapping the backward of the
 // in-place operation.
 // See NOTE [ Autograd View Variables ].
-struct CopySlices : public Function {
+struct TORCH_API CopySlices : public Node {
   CopySlices(
       const Variable& base_var,
       at::TensorGeometry view_,
-      std::shared_ptr<Function> fn_);
+      std::shared_ptr<Node> fn_);
 
   variable_list apply(variable_list&& inputs) override;
   void release_variables() override;
 
   at::TensorGeometry base;
   at::TensorGeometry view;
-  std::shared_ptr<Function> fn;
+  std::shared_ptr<Node> fn;
 };
 
 }}

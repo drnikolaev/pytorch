@@ -2,34 +2,35 @@
 
 // ${generated_comment}
 
-#include "ATen/CPUTypeDefault.h"
-#include "ATen/Context.h"
-#include "ATen/CheckGenerator.h"
+#include <c10/core/TensorOptions.h>
+#include <c10/core/Scalar.h>
+#include <c10/core/QScheme.h>
+#include <c10/core/MemoryFormat.h>
+#include <c10/util/ArrayRef.h>
+#include <c10/util/intrusive_ptr.h>
+#include <torch/csrc/WindowsTorchApiMacro.h>
 
 $extra_cuda_headers
 
-#ifdef _MSC_VER
-#ifdef Type
-#undef Type
-#endif
-#endif
+namespace c10 {
+struct Storage;
+}
 
 namespace at {
 
-struct ${Type} final : public ${DenseBackend}TypeDefault {
-  explicit ${Type}();
-  virtual ScalarType scalarType() const override;
-  virtual caffe2::TypeMeta typeMeta() const override;
-  virtual Backend backend() const override;
-  virtual const char * toString() const override;
-  virtual size_t elementSizeInBytes() const override;
-  virtual TypeID ID() const override;
+class Tensor;
+using TensorList = ArrayRef<Tensor>;
 
-  // example
-  // virtual Tensor * add(Tensor & a, Tensor & b) override;
+class Context;
+struct Generator;
 
-  virtual Tensor & s_copy_(Tensor & self, const Tensor & src, bool non_blocking) const override;
-  virtual Tensor & _s_copy_from(const Tensor & self, Tensor & dst, bool non_blocking) const override;
+struct Quantizer;
+// This is temporary typedef to enable Quantizer in aten native function API
+// we'll remove them when we are actually exposing Quantizer class
+// to frontend
+using ConstQuantizerPtr = const c10::intrusive_ptr<Quantizer>&;
+
+struct TORCH_API ${Type} final {
   ${type_derived_method_declarations}
 };
 

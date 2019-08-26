@@ -1,6 +1,8 @@
 #!/bin/bash
 
-COMPACT_JOB_NAME="${BUILD_ENVIRONMENT}-build"
+# shellcheck disable=SC2034
+COMPACT_JOB_NAME="${BUILD_ENVIRONMENT}"
+
 export PATH="/usr/local/bin:$PATH"
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
@@ -17,17 +19,18 @@ source ${PYTORCH_ENV_DIR}/miniconda3/bin/activate
 conda install -y mkl mkl-include numpy pyyaml setuptools cmake cffi ninja
 rm -rf ${PYTORCH_ENV_DIR}/miniconda3/lib/python3.6/site-packages/torch*
 
+git submodule sync --recursive
 git submodule update --init --recursive
 export CMAKE_PREFIX_PATH=${PYTORCH_ENV_DIR}/miniconda3/
 
 # Build PyTorch
-if [[ "${JOB_BASE_NAME}" == *cuda9.2* ]]; then
+if [[ "${BUILD_ENVIRONMENT}" == *cuda9.2* ]]; then
   export CUDA_VERSION=9.2
   export TORCH_CUDA_ARCH_LIST=5.2
   export PATH=/Developer/NVIDIA/CUDA-${CUDA_VERSION}/bin${PATH:+:${PATH}}
   export DYLD_LIBRARY_PATH=/Developer/NVIDIA/CUDA-${CUDA_VERSION}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}
   export CUDA_HOME=/Developer/NVIDIA/CUDA-${CUDA_VERSION}
-  export NO_CUDA=0
+  export USE_CUDA=1
 
   if [ -z "${IN_CIRCLECI}" ]; then
     # Eigen gives "explicit specialization of class must precede its first use" error
@@ -50,7 +53,7 @@ if which sccache > /dev/null; then
   printf "#!/bin/sh\nexec sccache $(which clang) \$*" > "${PYTORCH_ENV_DIR}/clang"
   chmod a+x "${PYTORCH_ENV_DIR}/clang"
 
-  if [[ "${JOB_BASE_NAME}" == *cuda* ]]; then
+  if [[ "${BUILD_ENVIRONMENT}" == *cuda* ]]; then
     printf "#!/bin/sh\nexec sccache $(which nvcc) \$*" > "${PYTORCH_ENV_DIR}/nvcc"
     chmod a+x "${PYTORCH_ENV_DIR}/nvcc"
     export CUDA_NVCC_EXECUTABLE="${PYTORCH_ENV_DIR}/nvcc"
@@ -64,6 +67,8 @@ export MAX_JOBS=2
 export IMAGE_COMMIT_TAG=${BUILD_ENVIRONMENT}-${IMAGE_COMMIT_ID}
 
 python setup.py install
+
+assert_git_not_dirty
 
 # Upload torch binaries when the build job is finished
 if [ -z "${IN_CIRCLECI}" ]; then

@@ -308,7 +308,7 @@ class CAFFE2_API Workspace {
   }
 
  public:
-  std::atomic<int> last_failed_op_net_position;
+  std::atomic<int> last_failed_op_net_position{};
 
  private:
   struct Bookkeeper {
@@ -319,7 +319,6 @@ class CAFFE2_API Workspace {
   static std::shared_ptr<Bookkeeper> bookkeeper();
 
   BlobMap blob_map_;
-  NetMap net_map_;
   const string root_folder_;
   const Workspace* shared_;
   std::unordered_map<string, std::pair<const Workspace*, string>>
@@ -327,6 +326,7 @@ class CAFFE2_API Workspace {
   std::unique_ptr<ThreadPool> thread_pool_;
   std::mutex thread_pool_creation_mutex_;
   std::shared_ptr<Bookkeeper> bookkeeper_;
+  NetMap net_map_;
 
   C10_DISABLE_COPY_AND_ASSIGN(Workspace);
 };

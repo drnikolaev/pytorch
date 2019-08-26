@@ -11,7 +11,7 @@ ENDIF(C_AVX2_FOUND)
 
 SET(hdr
   THGeneral.h THHalf.h THAllocator.h THSize.h THStorage.h THStorageFunctions.h THTensor.h THTensorApply.h THBlas.h THMath.h
-  THLapack.h THLogAdd.h THRandom.h THVector.h )
+  THLapack.h THLogAdd.h THVector.h )
 
 set(ATen_TH_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/THGeneral.cpp
@@ -19,8 +19,8 @@ set(ATen_TH_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/THSize.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THStorageFunctions.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THTensor.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/THTensorCopy.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THTensorRandom.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/THTensorFill.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THTensorMath.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THTensorMoreMath.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THTensorEvenMoreMath.cpp
@@ -29,7 +29,6 @@ set(ATen_TH_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/THBlas.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THLapack.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THLogAdd.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/THRandom.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THFile.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THDiskFile.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/THMemoryFile.cpp
@@ -65,6 +64,8 @@ INSTALL(FILES
   THFilePrivate.h
   ${CMAKE_CURRENT_BINARY_DIR}/THGeneral.h
   THGenerateAllTypes.h
+  THGenerateBFloat16Type.h
+  THGenerateBoolType.h
   THGenerateDoubleType.h
   THGenerateFloatType.h
   THGenerateHalfType.h
@@ -75,10 +76,13 @@ INSTALL(FILES
   THGenerateByteType.h
   THGenerateFloatTypes.h
   THGenerateIntTypes.h
+  THGenerateQUInt8Type.h
+  THGenerateQInt8Type.h
+  THGenerateQInt32Type.h
+  THGenerateQTypes.h
   THLapack.h
   THLogAdd.h
   THMemoryFile.h
-  THRandom.h
   THSize.h
   THStorage.h
   THStorageFunctions.h
@@ -112,8 +116,8 @@ INSTALL(FILES
   generic/THTensor.hpp
   generic/THTensorConv.cpp
   generic/THTensorConv.h
-  generic/THTensorCopy.cpp
-  generic/THTensorCopy.h
+  generic/THTensorFill.cpp
+  generic/THTensorFill.h
   generic/THTensorLapack.cpp
   generic/THTensorLapack.h
   generic/THTensorMath.cpp

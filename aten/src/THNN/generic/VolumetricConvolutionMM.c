@@ -1,8 +1,9 @@
 #ifndef TH_GENERIC_FILE
-#define TH_GENERIC_FILE "generic/VolumetricConvolutionMM.c"
+#define TH_GENERIC_FILE "THNN/generic/VolumetricConvolutionMM.c"
 #else
 
 #include <ATen/div_rtn.h>
+#include <ATen/Parallel.h>
 
 #define CONV3D_OMP_THRESHOLD 20
 
@@ -119,133 +120,10 @@ static THTensor* THNN_(newViewWeight)(THTensor *weight)
     int64_t s2 = weight->size(1) * weight->size(2) * weight->size(3) * weight->size(4);
     THTensor *old_weight = weight;
     weight = THTensor_(newWithStorage2d)(THTensor_getStoragePtr(weight), weight->storage_offset(),
-					 s1, -1, s2, -1);
+                                         s1, -1, s2, -1);
     c10::raw::intrusive_ptr::decref(old_weight);
   }
   return weight;
-}
-
-
-// Kernel for fast unfold+copy
-// Borrowed from Theano
-// Authors: Arjun Jain, Frédéric Bastien, Jan Schlüter, Nicolas Ballas
-
-static void THNN_(unfolded_acc_vol)(
-          THTensor *finput,
-          THTensor *input,
-          int kT,
-          int kW,
-          int kH,
-          int dT,
-          int dW,
-          int dH,
-          int pT,
-          int pW,
-          int pH,
-          int64_t nInputPlane,
-          int64_t inputDepth,
-          int64_t inputWidth,
-          int64_t inputHeight,
-          int64_t outputDepth,
-          int64_t outputWidth,
-          int64_t outputHeight)
-{
-  scalar_t *input_data = input->data<scalar_t>();
-  scalar_t *finput_data = finput->data<scalar_t>();
-#ifdef _OPENMP
-  int inOmp = omp_in_parallel();
-  #pragma omp parallel if (!inOmp) firstprivate(finput_data, input_data, outputWidth, outputHeight, outputDepth, kW, kH, kT, dW, dH, dT, pW, pH, pT, nInputPlane, inputHeight, inputWidth, inputDepth)
-  {
-    size_t num_threads = omp_get_num_threads();
-    size_t tid = omp_get_thread_num();
-    int64_t n = nInputPlane * inputHeight * inputWidth * inputDepth;
-    int64_t seg_len_tmp = n / num_threads;
-    int64_t line_index_offset = tid * seg_len_tmp;
-    int64_t line_seg_len = (tid == num_threads - 1)? (n-line_index_offset) : seg_len_tmp;
-
-    int64_t w = line_index_offset % inputWidth + pW;
-    int64_t h_index = line_index_offset / inputWidth;
-    int64_t h = h_index % inputHeight + pH;
-    int64_t d_index = h_index / inputHeight;
-    int64_t d = d_index % inputDepth + pT;
-    int64_t c = d_index / inputDepth;
-#else
-    int64_t line_seg_len = nInputPlane * inputHeight * inputWidth * inputDepth;
-    int64_t line_index_offset = 0;
-    int64_t w = pW;
-    int64_t h = pH;
-    int64_t d = pT;
-    int64_t c = 0;;
-#endif
-    int64_t outputHW = outputHeight * outputWidth;
-    int64_t outputDHW = outputDepth * outputHW;
-    int64_t kHkW = kH*kW;
-    int64_t kTkHkW = kT*kHkW;
-
-    int64_t coeff_d_col = outputHW - dT * kHkW * outputDHW;
-    int64_t coeff_h_col = outputWidth - dH * kW * outputDHW;
-    int64_t coeff_w_col = (1 - dW * outputDHW);
-
-    int64_t count = 0;
-    while (count < line_seg_len) {
-      // compute the start and end of the output
-      int64_t w_col_start = (w < kW) ? 0 : (w - kW) / dW + 1;
-      int64_t w_col_tmp = w / dW + 1;
-      int64_t w_col_end = w_col_tmp < outputWidth? w_col_tmp : outputWidth;
-
-      int64_t h_col_start = (h < kH) ? 0 : (h - kH) / dH + 1;
-      int64_t h_col_tmp = h / dH + 1;
-      int64_t h_col_end = h_col_tmp < outputHeight? h_col_tmp : outputHeight;
-
-      int64_t d_col_start = (d < kT) ? 0 : (d - kT) / dT + 1;
-      int64_t d_col_tmp = d / dT + 1;
-      int64_t d_col_end = d_col_tmp < outputDepth? d_col_tmp : outputDepth;
-
-      scalar_t val = 0;
-      int64_t offset = (c * kTkHkW + d * kHkW + h * kW + w) * outputDHW;
-
-      int64_t offset_w_col_start = w_col_start * coeff_w_col;
-      int64_t offset_d_col_start = d_col_start * coeff_d_col;
-      int64_t offset_h_col_start = h_col_start * coeff_h_col;
-      int64_t offset_w_col = offset_w_col_start + offset;
-      int64_t offset_d_col;
-      int64_t offset_h_col;
-      int64_t w_col, d_col, h_col;
-      for (w_col = w_col_start; w_col < w_col_end; ++w_col) {
-        offset_d_col = offset_d_col_start + offset_w_col;
-        for (d_col = d_col_start; d_col < d_col_end; ++d_col) {
-          offset_h_col = offset_h_col_start + offset_d_col;
-          for (h_col = h_col_start; h_col < h_col_end; ++h_col) {
-            val += finput_data[offset_h_col];
-            offset_h_col += coeff_h_col;
-          }
-          offset_d_col += coeff_d_col;
-        }
-        offset_w_col += coeff_w_col;
-      }
-
-      input_data[line_index_offset+count] = val;
-      count++;
-
-      if (count < line_seg_len) {
-        if (w - pW + 1 == inputWidth) {
-          w = pW;
-          if (h - pH + 1 == inputHeight) {
-            h = pH;
-            if (d - pT + 1 == inputDepth) {
-              d = pT;
-              c++;
-            }
-            else d++;
-          }
-          else h++;
-        }
-        else w++;
-      }
-    }
-#ifdef _OPENMP
-  }
-#endif
 }
 
 /*
@@ -306,16 +184,10 @@ static void THNN_(unfolded_copy_vol)(
   scalar_t *input_data = input->data<scalar_t>();
   scalar_t *finput_data = finput->data<scalar_t>();
 
-#ifdef _OPENMP
-  int inOmp = omp_in_parallel();
-  #pragma omp parallel if (!inOmp) firstprivate(finput_data, input_data, outputWidth, outputHeight, outputDepth, kW, kH, kT, dW, dH, dT, pW, pH, pT, nInputPlane, inputHeight, inputWidth, inputDepth)
-  {
-    size_t num_threads = omp_get_num_threads();
-    size_t tid = omp_get_thread_num();
-    int64_t n = nInputPlane*kT*kH*kW*outputDepth*outputWidth*outputHeight;
-    int64_t seg_len_tmp = n / num_threads;
-    int64_t line_index_offset = tid * seg_len_tmp;
-    int64_t line_seg_len = (tid == num_threads - 1)? (n-line_index_offset) : seg_len_tmp;
+  int64_t n = nInputPlane*kT*kH*kW*outputDepth*outputWidth*outputHeight;
+  at::parallel_for(0, n, 0, [&](int64_t start, int64_t end) {
+    int64_t line_index_offset = start;
+    int64_t line_seg_len = (end - start);
 
     int64_t w_out = line_index_offset % outputWidth;
     int64_t remained = line_index_offset / outputWidth;
@@ -329,17 +201,6 @@ static void THNN_(unfolded_copy_vol)(
     remained /= kH;
     int i = remained % kT;
     int64_t nip = remained / kT;
-#else
-    int64_t line_seg_len = nInputPlane*kT*kH*kW*outputDepth*outputWidth*outputHeight;
-    int64_t line_index_offset = 0;
-    int64_t w_out = 0;
-    int64_t h_out = 0;
-    int64_t d_out = 0;
-    int i = 0;
-    int j = 0;
-    int k = 0;
-    int64_t nip = 0;
-#endif
 
     int64_t count = 0;
     scalar_t* dst = finput_data + line_index_offset;
@@ -384,11 +245,8 @@ static void THNN_(unfolded_copy_vol)(
           }
         }
       }
-
     }
-#ifdef _OPENMP
-  }
-#endif
+  });
 }
 
 static void THNN_(VolumetricConvolutionMM_updateOutput_frame)(
@@ -524,37 +382,146 @@ void THNN_(VolumetricConvolutionMM_updateOutput)(
   else
   {
     int64_t T = input->size(0);
-    int64_t t;
 
     THTensor_(resize3d)(finput, T, kT*kW*kH*nInputPlane, outputDepth*outputHeight*outputWidth);
     THTensor_(resize5d)(output, T, nOutputPlane, outputDepth, outputHeight, outputWidth);
-#ifdef _OPENMP
-    #pragma omp parallel for if(T > CONV3D_OMP_THRESHOLD) private(t)
-#endif
-    for (t = 0; t < T; t++)
-    {
-      THTensor *input_t = THTensor_(newSelect)(input, 0, t);
-      THTensor *output_t = THTensor_(newSelect)(output, 0, t);
-      THTensor *finput_t = THTensor_(newSelect)(finput, 0, t);
+    at::parallel_for(0, T, CONV3D_OMP_THRESHOLD, [&](int64_t start, int64_t end) {
+      for (auto t = start; t < end; t++)
+      {
+        THTensor *input_t = THTensor_(newSelect)(input, 0, t);
+        THTensor *output_t = THTensor_(newSelect)(output, 0, t);
+        THTensor *finput_t = THTensor_(newSelect)(finput, 0, t);
 
-      THNN_(VolumetricConvolutionMM_updateOutput_frame)(
-        input_t, output_t, weight, bias, finput_t,
-        kT, kW, kH,
-        dT, dW, dH,
-        pT, pW, pH,
-        nInputPlane, inputDepth, inputWidth, inputHeight,
-        nOutputPlane, outputDepth, outputWidth, outputHeight
-      );
+        THNN_(VolumetricConvolutionMM_updateOutput_frame)(
+          input_t, output_t, weight, bias, finput_t,
+          kT, kW, kH,
+          dT, dW, dH,
+          pT, pW, pH,
+          nInputPlane, inputDepth, inputWidth, inputHeight,
+          nOutputPlane, outputDepth, outputWidth, outputHeight
+        );
 
-      c10::raw::intrusive_ptr::decref(input_t);
-      c10::raw::intrusive_ptr::decref(output_t);
-      c10::raw::intrusive_ptr::decref(finput_t);
-    }
+        c10::raw::intrusive_ptr::decref(input_t);
+        c10::raw::intrusive_ptr::decref(output_t);
+        c10::raw::intrusive_ptr::decref(finput_t);
+      }
+    });
   }
 
   c10::raw::intrusive_ptr::decref(input);
   c10::raw::intrusive_ptr::decref(weight);
 }
+
+#if !defined(TH_REAL_IS_LONG)
+
+// Kernel for fast unfold+copy
+// Borrowed from Theano
+// Authors: Arjun Jain, Frédéric Bastien, Jan Schlüter, Nicolas Ballas
+
+static void THNN_(unfolded_acc_vol)(
+          THTensor *finput,
+          THTensor *input,
+          int kT,
+          int kW,
+          int kH,
+          int dT,
+          int dW,
+          int dH,
+          int pT,
+          int pW,
+          int pH,
+          int64_t nInputPlane,
+          int64_t inputDepth,
+          int64_t inputWidth,
+          int64_t inputHeight,
+          int64_t outputDepth,
+          int64_t outputWidth,
+          int64_t outputHeight)
+{
+  scalar_t *input_data = input->data<scalar_t>();
+  scalar_t *finput_data = finput->data<scalar_t>();
+
+  int64_t n = nInputPlane * inputHeight * inputWidth * inputDepth;
+  at::parallel_for(0, n, 0, [&](int64_t start, int64_t end) {
+    int64_t line_index_offset = start;
+    int64_t line_seg_len = (end - start);
+
+    int64_t w = line_index_offset % inputWidth + pW;
+    int64_t h_index = line_index_offset / inputWidth;
+    int64_t h = h_index % inputHeight + pH;
+    int64_t d_index = h_index / inputHeight;
+    int64_t d = d_index % inputDepth + pT;
+    int64_t c = d_index / inputDepth;
+
+    int64_t outputHW = outputHeight * outputWidth;
+    int64_t outputDHW = outputDepth * outputHW;
+    int64_t kHkW = kH*kW;
+    int64_t kTkHkW = kT*kHkW;
+
+    int64_t coeff_d_col = outputHW - dT * kHkW * outputDHW;
+    int64_t coeff_h_col = outputWidth - dH * kW * outputDHW;
+    int64_t coeff_w_col = (1 - dW * outputDHW);
+
+    int64_t count = 0;
+    while (count < line_seg_len) {
+      // compute the start and end of the output
+      int64_t w_col_start = (w < kW) ? 0 : (w - kW) / dW + 1;
+      int64_t w_col_tmp = w / dW + 1;
+      int64_t w_col_end = w_col_tmp < outputWidth? w_col_tmp : outputWidth;
+
+      int64_t h_col_start = (h < kH) ? 0 : (h - kH) / dH + 1;
+      int64_t h_col_tmp = h / dH + 1;
+      int64_t h_col_end = h_col_tmp < outputHeight? h_col_tmp : outputHeight;
+
+      int64_t d_col_start = (d < kT) ? 0 : (d - kT) / dT + 1;
+      int64_t d_col_tmp = d / dT + 1;
+      int64_t d_col_end = d_col_tmp < outputDepth? d_col_tmp : outputDepth;
+
+      scalar_t val = 0;
+      int64_t offset = (c * kTkHkW + d * kHkW + h * kW + w) * outputDHW;
+
+      int64_t offset_w_col_start = w_col_start * coeff_w_col;
+      int64_t offset_d_col_start = d_col_start * coeff_d_col;
+      int64_t offset_h_col_start = h_col_start * coeff_h_col;
+      int64_t offset_w_col = offset_w_col_start + offset;
+      int64_t offset_d_col;
+      int64_t offset_h_col;
+      int64_t w_col, d_col, h_col;
+      for (w_col = w_col_start; w_col < w_col_end; ++w_col) {
+        offset_d_col = offset_d_col_start + offset_w_col;
+        for (d_col = d_col_start; d_col < d_col_end; ++d_col) {
+          offset_h_col = offset_h_col_start + offset_d_col;
+          for (h_col = h_col_start; h_col < h_col_end; ++h_col) {
+            val += finput_data[offset_h_col];
+            offset_h_col += coeff_h_col;
+          }
+          offset_d_col += coeff_d_col;
+        }
+        offset_w_col += coeff_w_col;
+      }
+
+      input_data[line_index_offset+count] = val;
+      count++;
+
+      if (count < line_seg_len) {
+        if (w - pW + 1 == inputWidth) {
+          w = pW;
+          if (h - pH + 1 == inputHeight) {
+            h = pH;
+            if (d - pT + 1 == inputDepth) {
+              d = pT;
+              c++;
+            }
+            else d++;
+          }
+          else h++;
+        }
+        else w++;
+      }
+    }
+  });
+}
+
 
 static void THNN_(VolumetricConvolutionMM_updateGradInput_frame)(
           THTensor *gradInput,
@@ -639,28 +606,25 @@ void THNN_(VolumetricConvolutionMM_updateGradInput)(
   else
   {
     int64_t T = input->size(0);
-    int64_t t;
+    at::parallel_for(0, T, CONV3D_OMP_THRESHOLD, [&](int64_t start, int64_t end) {
+      for (auto t = start; t < end; t++)
+      {
+        THTensor *gradInput_t = THTensor_(newSelect)(gradInput, 0, t);
+        THTensor *gradOutput_t = THTensor_(newSelect)(gradOutput, 0, t);
+        THTensor *fgradInput_t = THTensor_(newSelect)(fgradInput, 0, t);
 
-#ifdef _OPENMP
-    #pragma omp parallel for if(T > CONV3D_OMP_THRESHOLD) private(t)
-#endif
-    for (t = 0; t < T; t++)
-    {
-      THTensor *gradInput_t = THTensor_(newSelect)(gradInput, 0, t);
-      THTensor *gradOutput_t = THTensor_(newSelect)(gradOutput, 0, t);
-      THTensor *fgradInput_t = THTensor_(newSelect)(fgradInput, 0, t);
+        THNN_(VolumetricConvolutionMM_updateGradInput_frame)(
+          gradInput_t, gradOutput_t, tweight, fgradInput_t,
+          kT, kW, kH,
+          dT, dW, dH,
+          pT, pW, pH
+        );
 
-      THNN_(VolumetricConvolutionMM_updateGradInput_frame)(
-        gradInput_t, gradOutput_t, tweight, fgradInput_t,
-        kT, kW, kH,
-        dT, dW, dH,
-        pT, pW, pH
-      );
-
-      c10::raw::intrusive_ptr::decref(gradInput_t);
-      c10::raw::intrusive_ptr::decref(gradOutput_t);
-      c10::raw::intrusive_ptr::decref(fgradInput_t);
-    }
+        c10::raw::intrusive_ptr::decref(gradInput_t);
+        c10::raw::intrusive_ptr::decref(gradOutput_t);
+        c10::raw::intrusive_ptr::decref(fgradInput_t);
+      }
+    });
   }
 
   c10::raw::intrusive_ptr::decref(tweight);
@@ -738,26 +702,24 @@ void THNN_(VolumetricConvolutionMM_accGradParameters)(
   else  // batch mode
   {
     int64_t T = input->size(0);
-    int64_t t;
 
-#ifdef _OPENMP
-    #pragma omp parallel for if(T > CONV3D_OMP_THRESHOLD) private(t)
-#endif
-    for (t = 0; t < T; t++)
-    {
-      THTensor *gradOutput_t = THTensor_(newSelect)(gradOutput, 0, t);
-      THTensor *finput_t = NULL;
-      if (gradWeight) {
-        finput_t = THTensor_(newSelect)(finput, 0, t);
+    at::parallel_for(0, T, CONV3D_OMP_THRESHOLD, [&](int64_t start, int64_t end) {
+      for (auto t = start; t < end; t++)
+      {
+        THTensor *gradOutput_t = THTensor_(newSelect)(gradOutput, 0, t);
+        THTensor *finput_t = NULL;
+        if (gradWeight) {
+          finput_t = THTensor_(newSelect)(finput, 0, t);
+        }
+
+        THNN_(VolumetricConvolutionMM_accGradParameters_frame)(gradOutput_t, gradWeight, gradBias, finput_t, scale);
+
+        c10::raw::intrusive_ptr::decref(gradOutput_t);
+        if (gradWeight) {
+          c10::raw::intrusive_ptr::decref(finput_t);
+        }
       }
-
-      THNN_(VolumetricConvolutionMM_accGradParameters_frame)(gradOutput_t, gradWeight, gradBias, finput_t, scale);
-
-      c10::raw::intrusive_ptr::decref(gradOutput_t);
-      if (gradWeight) {
-        c10::raw::intrusive_ptr::decref(finput_t);
-      }
-    }
+    });
   }
 
   c10::raw::intrusive_ptr::decref(input);
@@ -767,4 +729,5 @@ void THNN_(VolumetricConvolutionMM_accGradParameters)(
   }
 }
 
+#endif
 #endif

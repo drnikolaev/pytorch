@@ -1,10 +1,8 @@
 import warnings
-from .._jit_internal import weak_script
 
 # NB: Keep this file in sync with enums in aten/src/ATen/core/Reduction.h
 
 
-@weak_script
 def get_enum(reduction):
     # type: (str) -> int
     if reduction == 'none':
@@ -18,7 +16,7 @@ def get_enum(reduction):
         ret = 2
     else:
         ret = -1  # TODO: remove once JIT exceptions support control flow
-        raise ValueError(reduction + " is not a valid value for reduction")
+        raise ValueError("{} is not a valid value for reduction".format(reduction))
     return ret
 
 # In order to support previous versions, accept boolean size_average and reduce
@@ -27,6 +25,7 @@ def get_enum(reduction):
 
 # We use these functions in torch/legacy as well, in which case we'll silence the warning
 def legacy_get_string(size_average, reduce, emit_warning=True):
+    # type: (Optional[bool], Optional[bool], bool) -> str
     warning = "size_average and reduce args will be deprecated, please use reduction='{}' instead."
 
     if size_average is None:
@@ -46,4 +45,5 @@ def legacy_get_string(size_average, reduce, emit_warning=True):
 
 
 def legacy_get_enum(size_average, reduce, emit_warning=True):
+    # type: (Optional[bool], Optional[bool], bool) -> int
     return get_enum(legacy_get_string(size_average, reduce, emit_warning))

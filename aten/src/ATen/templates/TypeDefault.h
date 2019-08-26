@@ -2,54 +2,36 @@
 
 // ${generated_comment}
 
-#include "ATen/TypeExtendedInterface.h"
+#include <c10/core/TensorOptions.h>
+#include <c10/core/Scalar.h>
+#include <c10/core/QScheme.h>
+#include <c10/core/MemoryFormat.h>
+#include <c10/util/ArrayRef.h>
+#include <c10/util/intrusive_ptr.h>
+#include <torch/csrc/WindowsTorchApiMacro.h>
+#ifdef BUILD_NAMEDTENSOR
+#include <ATen/NamedTensorUtils.h>
+#endif
+
+namespace c10 {
+struct Storage;
+}
 
 namespace at {
 
-struct CAFFE2_API TypeDefault : public TypeExtendedInterface {
-  explicit TypeDefault(TensorTypeId type_id, bool is_variable, bool is_undefined)
-      : TypeExtendedInterface(type_id, is_variable, is_undefined) {}
+class Tensor;
+using TensorList = ArrayRef<Tensor>;
 
-  // Make sure overload resolution considers the nullary virtual method.
-  // (A single argument overload is generated in the list.)
-  bool is_cuda() const override {
-    return backend() == Backend::CUDA || backend() == Backend::SparseCUDA;
-  }
-  bool is_sparse() const override {
-    return backend() == Backend::SparseCPU || backend() == Backend::SparseCUDA;
-  }
-  bool is_distributed() const override {
-    return false;
-  }
+class Context;
+struct Generator;
 
-  Type & toBackend(Backend b) const override;
-  Type & toScalarType(ScalarType s) const override;
+struct Quantizer;
+// This is temporary typedef to enable Quantizer in aten native function API
+// we'll remove them when we are actually exposing Quantizer class
+// to frontend
+using ConstQuantizerPtr = const c10::intrusive_ptr<Quantizer>&;
 
-  Tensor copy(const Tensor & src, bool non_blocking=false, optional<Device> to_device={}) const override;
-  Tensor & copy_(Tensor & self, const Tensor & src, bool non_blocking=false) const override;
-
-  void backward(
-      Tensor& self,
-      c10::optional<Tensor> gradient,
-      bool keep_graph,
-      bool create_graph) const override;
-  void set_data(Tensor & self, Tensor new_data) const override;
-
-  Tensor tensorFromBlob(void * data, IntList sizes, const std::function<void(void*)> & deleter=noop_deleter) const override;
-  Tensor tensorFromBlob(void * data, IntList sizes, IntList strides, const std::function<void(void*)> & deleter=noop_deleter) const override;
-  Tensor tensorWithAllocator(IntList sizes, Allocator* allocator) const override;
-  Tensor tensorWithAllocator(IntList sizes, IntList strides, Allocator* allocator) const override;
-  Tensor scalarTensor(Scalar s) const override;
-
-  Storage storage(bool resizable = false) const override;
-  Storage storage(size_t size, bool resizable = false) const override;
-  Storage storageFromBlob(void * data, int64_t size, const std::function<void(void*)> & deleter) const override;
-  Storage storageWithAllocator(int64_t size, Allocator* allocator) const override;
-  Storage unsafeStorageFromTH(void * th_pointer, bool retain) const override;
-  Tensor unsafeTensorFromTH(void * th_pointer, bool retain) const override;
-
-  // example
-  // virtual Tensor * add(Tensor & a, Tensor & b) = 0;
+struct TORCH_API TypeDefault {
   ${type_method_declarations}
 };
 

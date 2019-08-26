@@ -1,18 +1,20 @@
 #pragma once
 
-#include "ATen/core/ATenGeneral.h"
-#include "ATen/StorageImpl.h"
-#include "ATen/core/UndefinedTensorImpl.h"
+#include <ATen/core/ATenGeneral.h>
+#include <ATen/core/Generator.h>
+#include <c10/core/StorageImpl.h>
+#include <c10/core/UndefinedTensorImpl.h>
 
-#include <ATen/core/ScalarType.h>
-#include "ATen/Formatting.h"
-#include "ATen/core/ArrayRef.h"
-#include "c10/util/Exception.h"
+#include <c10/core/ScalarType.h>
+#include <ATen/Formatting.h>
+#include <c10/util/ArrayRef.h>
+#include <c10/util/Exception.h>
 
 #include <algorithm>
 #include <sstream>
 #include <typeinfo>
 #include <numeric>
+#include <memory>
 
 #if defined(__clang__)
 #define __ubsan_ignore_float_divide_by_zero__ __attribute__((no_sanitize("float-divide-by-zero")))
@@ -21,6 +23,10 @@
 #define __ubsan_ignore_float_divide_by_zero__
 #define __ubsan_ignore_vptr__
 #endif
+
+#define AT_DISALLOW_COPY_AND_ASSIGN(TypeName) \
+  TypeName(const TypeName&) = delete; \
+  void operator=(const TypeName&) = delete
 
 namespace at {
 
@@ -31,7 +37,7 @@ static inline const Storage& checked_storage(
     const char* name,
     int pos,
     DeviceType device_type,
-    DataType data_type) {
+    caffe2::TypeMeta dtype) {
   if (expr.device_type() != device_type) {
     AT_ERROR(
         "Expected object of device type ",
@@ -44,10 +50,10 @@ static inline const Storage& checked_storage(
         name,
         "'");
   }
-  if (expr.dtype().id() != data_type) {
+  if (expr.dtype() != dtype) {
     AT_ERROR(
         "Expected object of data type ",
-        data_type,
+        dtype,
         " but got data type ",
         expr.dtype().id(),
         " for argument #",
@@ -61,17 +67,20 @@ static inline const Storage& checked_storage(
 
 // TODO: Change Backend into TensorTypeId
 // TODO: Stop unwrapping (this is blocked on getting rid of TH ;)
-static inline TensorImpl* checked_tensor_unwrap(const Tensor& expr, const char * name, int pos, bool allowNull, Backend backend, ScalarType scalar_type) {
+static inline TensorImpl* checked_tensor_unwrap(const Tensor& expr, const char * name, int pos, const char * api, bool allowNull, Backend backend, ScalarType scalar_type) {
   if(allowNull && !expr.defined()) {
     return nullptr;
   }
   if (tensorTypeIdToBackend(expr.type_id()) != backend) {
     AT_ERROR("Expected object of backend ", backend, " but got backend ", tensorTypeIdToBackend(expr.type_id()),
-             " for argument #", pos, " '", name, "'");
+             " for argument #", pos, " '", name, "' in call to ", api);
   }
   if (expr.scalar_type() != scalar_type) {
     AT_ERROR("Expected object of scalar type ", scalar_type, " but got scalar type ", expr.scalar_type(),
-             " for argument #", pos, " '", name, "'");
+             " for argument #", pos, " '", name, "' in call to ", api);
+  }
+  if (expr.is_variable()) {  // TODO: change this to check `.requires_grad()` and `GradMode::is_enabled()` when Variable and Tensor are merged
+    AT_ERROR("Expected Tensor (not Variable) for argument #", pos, " '", name, "' in call to ", api);
   }
   return expr.unsafeGetTensorImpl();
 }
@@ -88,7 +97,11 @@ static inline std::vector<TensorImpl*> checked_tensor_list_unwrap(ArrayRef<Tenso
     }
     if (expr.scalar_type() != scalar_type) {
       AT_ERROR("Expected object of scalar type ", scalar_type, " but got scalar type ", expr.scalar_type(),
-               " for sequence elment ", i , " in sequence argument at position #", pos, " '", name, "'");
+               " for sequence element ", i , " in sequence argument at position #", pos, " '", name, "'");
+    }
+    if (expr.is_variable()) {  // TODO: change this to check `.requires_grad()` and `GradMode::is_enabled()` when Variable and Tensor are merged
+      AT_ERROR("Expected Tensor (not Variable) for sequence element ",
+               i , " in sequence argument at position #", pos, " '", name, "'");
     }
     unwrapped.emplace_back(expr.unsafeGetTensorImpl());
   }
@@ -113,11 +126,40 @@ std::array<int64_t, N> check_intlist(ArrayRef<int64_t> list, const char * name, 
 }
 
 inline int64_t sum_intlist(ArrayRef<int64_t> list) {
-  return std::accumulate(list.begin(), list.end(), 0);
+  return std::accumulate(list.begin(), list.end(), 0ll);
 }
 
 inline int64_t prod_intlist(ArrayRef<int64_t> list) {
-  return std::accumulate(list.begin(), list.end(), 1, std::multiplies<int64_t>());
+  return std::accumulate(list.begin(), list.end(), 1ll, std::multiplies<int64_t>());
+}
+
+/**
+ * Utility function used in tensor implementations, which
+ * supplies the default generator to tensors, if an input generator
+ * is not supplied. The input Generator* is also static casted to
+ * the backend generator type (CPU/CUDAGenerator etc.)
+ */
+template <typename T>
+static inline T * get_generator_or_default(Generator * expr, Generator * defaultValue) {
+  if (!expr) {
+    expr = defaultValue;
+  }
+  if (T::device_type() == expr->device().type()) {
+    return static_cast<T*>(expr);
+  }
+  AT_ERROR("Expected a '", T::device_type(), "' device type for generator but found '", expr->device().type(), "'");
+}
+
+/**
+ * Utility function to static cast input Generator* to
+ * the backend generator type (CPU/CUDAGenerator etc.)
+ */
+template <typename T>
+static inline T * check_generator(Generator * expr) {
+  if (T::device_type() == expr->device().type()) {
+    return static_cast<T*>(expr);
+  }
+  AT_ERROR("Expected a '", T::device_type(), "' device type for generator but found '", expr->device().type(), "'");
 }
 
 } // at

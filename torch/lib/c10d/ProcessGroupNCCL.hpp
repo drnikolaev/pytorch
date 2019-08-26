@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 #include <c10d/NCCLUtils.hpp>
@@ -11,6 +12,10 @@
 #include <ATen/cuda/CUDAEvent.h>
 
 namespace c10d {
+
+// Environment variable which controls whether or not wait() is blocking or
+// non-blocking.
+constexpr const char* NCCL_BLOCKING_WAIT = "NCCL_BLOCKING_WAIT";
 
 // ProcessGroupNCCL implements NCCL bindings for c10d.
 //
@@ -30,13 +35,6 @@ namespace c10d {
 //
 // either WorkNCCL::wait() or WorkNCCL::synchronize(), both achieves the same
 // functionality and are synonyms.
-//
-// Note that WorkNCCL::isSuccess() and WorkNCCL::isCompleted() will always
-// return true since ProcessGroupNCCL is single threaded. Every single NCCL
-// or CUDA failure will simply raise std::runtime_error.
-//
-// Therefore, WorkNCCL::exception() is not supported since isSuccess() always
-// returns true.
 //
 // Also note that WorkNCCL::finishedGPUExecution() is a helper function only
 // provided by ProcessGroupNCCL to check if the NCCL operation of WorkNCCL has
@@ -67,23 +65,19 @@ class ProcessGroupNCCL : public ProcessGroup {
     // Non-blocking operation.
     bool isCompleted() override;
 
-    // Let current stream wait on the completing of the NCCL work
-    // always return true and will throw if there are exceptions
-    // Non-blocking operation
-    bool wait() override;
-
-    // Will always return true
     bool isSuccess() const override;
 
-    // Same as wait()
-    void synchronize() override;
+    // Same as calling synchronize() for NCCL work.
+    void wait() override;
 
-    // Not supported by WorkNCCL
-    const std::exception& exception() const override;
+    // Let current stream wait on the completing of the NCCL work
+    // Throws on exceptions. Blocking operation, which will wait for work
+    // completion.
+    void synchronize() override;
 
     // Helper function that checks if the NCCL kernels have finished
     // execution on the GPUs
-    bool finishedGPUExecution() const;
+    bool finishedGPUExecution();
 
    protected:
     // The cached list of CUDA devices to operate on
@@ -92,11 +86,61 @@ class ProcessGroupNCCL : public ProcessGroup {
     // The CUDA events tracking this work item on multiple CUDA devices
     std::vector<at::cuda::CUDAEvent> cudaEvents_;
 
+    // The NCCL communicators used for this work item.
+    std::vector<std::shared_ptr<NCCLComm>> ncclComms_;
+
+    // Tensors used for barrier op
+    std::vector<at::Tensor> barrierTensors_;
+
+    // Clone of blockingWait_ from ProcessGroupNCCL.
+    bool blockingWait_ = false;
+
+    // Clonge of opTimeout_ from ProcessGroupNCCL.
+    std::chrono::milliseconds opTimeout_;
+
+    // Time point representing when the work started.
+    std::chrono::time_point<std::chrono::steady_clock> workStartTime_;
+
+    // Wrapper method for the static checkForNCCLErrors which can be overridden
+    // for tests.
+    virtual std::exception_ptr checkForNCCLErrors(
+        const std::vector<std::shared_ptr<NCCLComm>>& ncclComms) const;
+
+   private:
+    // Checks for NCCL errors and sets an appropriate exception_ptr.
+    void checkAndSetException();
+
+    // Checks for NCCL errors and throws an appropriate exception.
+    void checkAndThrowException();
+
+    // Just checks whether GPU execution has completed, without modifying
+    // exception_ptr.
+    bool finishedGPUExecutionInternal() const;
+
     friend class ProcessGroupNCCL;
   };
 
   // Constructor will also check the number of available GPUs in the system
-  ProcessGroupNCCL(const std::shared_ptr<Store>& store, int rank, int size);
+  //
+  // Group support:
+  //
+  // In order to support multiple NCCL process groups, each of which has
+  // different group ranks, we need to use groupName to identify each group
+  // to ensure the correct behavior. In other words, each process group that
+  // has different group ranks needs to have a different and unique groupName
+  // to avoid clashing into undefined behaviors.
+  //
+  // In Python frontend API of torch.distributed, it guarantees that each group
+  // will have a unique name to be passed into the ProcessGroupNCCL constructor.
+  // If you would like to use ProcessGroupNCCL constructor directly, it is
+  // your reponsibility to do so as well.
+  ProcessGroupNCCL(
+      const std::shared_ptr<Store>& store,
+      int rank,
+      int size,
+      const std::string& groupName = "",
+      const std::chrono::milliseconds& opTimeout =
+          std::chrono::milliseconds(kProcessGroupNCCLOpTimeoutMillis));
 
   virtual ~ProcessGroupNCCL();
 
@@ -114,7 +158,16 @@ class ProcessGroupNCCL : public ProcessGroup {
 
   std::shared_ptr<ProcessGroup::Work> allgather(
       std::vector<std::vector<at::Tensor>>& outputTensors,
-      std::vector<at::Tensor>& inputTensors) override;
+      std::vector<at::Tensor>& inputTensors,
+      const AllgatherOptions& opts = AllgatherOptions()) override;
+
+  std::shared_ptr<ProcessGroup::Work> reduce_scatter(
+      std::vector<at::Tensor>& outputTensors,
+      std::vector<std::vector<at::Tensor>>& inputTensors,
+      const ReduceScatterOptions& opts = ReduceScatterOptions()) override;
+
+  std::shared_ptr<ProcessGroup::Work> barrier(
+      const BarrierOptions& opts = BarrierOptions()) override;
 
   // Unsupported Ops
   std::shared_ptr<ProcessGroup::Work> gather(
@@ -139,12 +192,9 @@ class ProcessGroupNCCL : public ProcessGroup {
 
   std::shared_ptr<ProcessGroup::Work> recvAnysource(
       std::vector<at::Tensor>& tensors,
-      int* srcRank,
       int tag) override;
 
-  std::shared_ptr<ProcessGroup::Work> barrier() override;
-
-  std::unordered_map<int, int> getGroupRank() override;
+  static const int64_t kProcessGroupNCCLOpTimeoutMillis;
 
  protected:
   // Helper that broadcasts nccl unique ID to all ranks through the store
@@ -156,14 +206,57 @@ class ProcessGroupNCCL : public ProcessGroup {
       const std::string& devicesKey,
       const std::vector<at::Device>& devices);
 
-  // Tensor checker helper
-  void tensorCheckHelper(
-      const std::vector<at::Tensor>& input,
-      const std::vector<at::Tensor>& output,
-      int outputOverInput = 1);
+  // Wrapper method which can be overridden for tests.
+  virtual std::exception_ptr checkForNCCLErrors(
+      const std::vector<std::shared_ptr<NCCLComm>>& ncclComms);
+
+  virtual std::shared_ptr<ProcessGroupNCCL::WorkNCCL> initWork(
+      std::vector<at::Device> devices);
+
+ private:
+  // Helper that encapsulates work shared across all collective communication
+  // primitives.  The callbacks have the following signatures:
+  //
+  //    ncclResult_t fn(at::Tensor& input, at::Tensor& output,
+  //                    ncclComm_t, at::cuda::CUDAStream&);
+  //    void {pre,post}(std::vector<at::cuda::CUDAStream&>);
+  template <typename Fn>
+  std::shared_ptr<ProcessGroup::Work> collective(
+      std::vector<at::Tensor>& input,
+      std::vector<at::Tensor>& output,
+      Fn fn);
+  template <typename Fn, typename PreProcess, typename PostProcess>
+  std::shared_ptr<ProcessGroup::Work> collective(
+      std::vector<at::Tensor>& input,
+      std::vector<at::Tensor>& output,
+      Fn fn,
+      PreProcess pre,
+      PostProcess post);
+
+  // Checks for NCCL errors on each of the communicators and returns an
+  // appropriate exception_ptr (nullptr if no errors).
+  static std::exception_ptr checkForNCCLErrorsInternal(
+      const std::vector<std::shared_ptr<NCCLComm>>& ncclComms);
+
+  // Function that runs as part of a separate thread and checks for errors on
+  // NCCL communicators. We need a separate thread to check for NCCL errors
+  // since we can't rely on the user calling certain methods like wait(),
+  // isCompleted() etc. to detect and remediate errors. In addition to this, we
+  // need a mechanism to safely abort and remove NCCL communicators from our
+  // cache. This can be done cleanly by having a thread for the ProcessGroupNCCL
+  // class. Attempting to modify the communicator cache from the WorkNCCL class
+  // might run into issues with object lifetime since the ProcessGroupNCCL
+  // object might get destroyed before the WorkNCCL object.
+  void ncclCommWatchdog();
+
+ protected:
+  static const int64_t kWatchdogThreadSleepMillis;
 
   // Store that is used to exchange each Ranks's NCCL unique ID
   std::shared_ptr<Store> store_;
+
+  // The process group name
+  std::string groupName_;
 
   // The NCCL communicator that the process group has cached.
   // The key is a list of GPU devices that an operation is operating on
@@ -187,6 +280,21 @@ class ProcessGroupNCCL : public ProcessGroup {
   std::unordered_map<std::string, std::vector<std::shared_ptr<NCCLComm>>>
       devNCCLCommMap_;
 
+  // Mutex to guard devNCCLCommMap_.
+  std::mutex devNCCLCommMapLock_;
+
+  // Watchdog thread which looks for errors on the cached NCCL communicators.
+  std::thread ncclCommWatchdogThread_;
+
+  // Whether or not we should terminate the watchdog thread.
+  std::atomic<bool> terminateWatchdog_;
+
+  // Condition variable to control how long the watchdog thread waits.
+  std::condition_variable watchdogCV_;
+
+  // Mutex for watchdog.
+  std::mutex watchdogCVMutex_;
+
   // The CUDA steams used by NCCL kernels
   std::unordered_map<std::string, std::vector<at::cuda::CUDAStream>>
       ncclStreams_;
@@ -197,10 +305,41 @@ class ProcessGroupNCCL : public ProcessGroup {
   // ID of this process group
   std::string processGroupID_;
 
+  // Group Prefix and ID of this process group
+  std::string groupPgID_;
+
+  // Device Indexes used for all collectives in this group
+  std::set<int> usedDeviceIdxs_;
+
   // processGroupID tracking
   static std::mutex pgTrackingLock_;
-  static std::unordered_map<ssize_t, ssize_t> pgUniqueNCCLIDCnt_;
-  static ssize_t processGroupCounter_;
+
+  // map from the key: "group name + pg counter (ID)" to the
+  // unique NCCL ID count. This needs to be group and pg specific
+  //
+  // For each process group, we need a uniform unique NCCL ID counter to ensure
+  // that NCCL operation in this process group can be completed successfully.
+  // Since each process group ID belongs to a group name, the key to this map
+  // is a combination of group name and ProcessGroupNCCL ID.
+  static std::unordered_map<std::string, ssize_t> pgUniqueNCCLIDCnt_;
+
+  // map from group name to the pg counter (ID) within that group
+  //
+  // For each group with the "group name" (which is the key), we need to
+  // keep track of a unique process group ID when creating a new
+  // ProcessGroupNCCL for this "group name". Therefore, the value of this
+  // map keeps the unique ProcessGroupNCCL's ID for a specific group with
+  // the "group name". The reason we need a per-group process group ID counter
+  // is that different group can have different ranks and we need ensure that
+  // each group has its own uniform process group ID for all its ranks.
+  static std::unordered_map<std::string, ssize_t> processGroupCounterMap_;
+
+  // Whether or not wait() and synchronize() are blocking operations that wait
+  // for the operation to complete.
+  bool blockingWait_ = false;
+
+  // Timeout for operations. This is only used when blockingWait_ is enabled.
+  std::chrono::milliseconds opTimeout_;
 };
 
 } // namespace c10d

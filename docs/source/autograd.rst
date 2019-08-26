@@ -65,7 +65,7 @@ Variable (deprecated)
 Tensor autograd functions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. autoclass:: torch.Tensor
-    :members: backward, detach, detach_, register_hook, retain_grad
+   :members: grad, requires_grad, is_leaf, backward, detach, detach_, register_hook, retain_grad
 
 :hidden:`Function`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -92,6 +92,9 @@ and nvprof based (registers both CPU and GPU activity) using
 :class:`~torch.autograd.profiler.emit_nvtx`.
 
 .. autoclass:: torch.autograd.profiler.profile
+    :members:
+
+.. autoclass:: torch.autograd.profiler.record_function
     :members:
 
 .. autoclass:: torch.autograd.profiler.emit_nvtx

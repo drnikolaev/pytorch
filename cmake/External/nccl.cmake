@@ -1,19 +1,19 @@
 if (NOT __NCCL_INCLUDED)
   set(__NCCL_INCLUDED TRUE)
 
-  # try the system-wide nccl first
-  find_package(NCCL)
-  if (NCCL_FOUND)
+  if (USE_SYSTEM_NCCL)
+    # NCCL_ROOT, NCCL_LIB_DIR, NCCL_INCLUDE_DIR will be accounted in the following line.
+    find_package(NCCL REQUIRED)
+    if (NCCL_FOUND)
       add_library(__caffe2_nccl INTERFACE)
       target_link_libraries(__caffe2_nccl INTERFACE ${NCCL_LIBRARIES})
       target_include_directories(__caffe2_nccl INTERFACE ${NCCL_INCLUDE_DIRS})
-  else()
-    if (TORCH_CUDA_ARCH_LIST)
-      torch_cuda_get_nvcc_gencode_flag(NVCC_GENCODE)
-      string(REPLACE "-gencode;" "-gencode=" NVCC_GENCODE "${NVCC_GENCODE}")
-      # this second replacement is needed when there are multiple archs
-      string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")
     endif()
+  else()
+    torch_cuda_get_nvcc_gencode_flag(NVCC_GENCODE)
+    string(REPLACE "-gencode;" "-gencode=" NVCC_GENCODE "${NVCC_GENCODE}")
+    # this second replacement is needed when there are multiple archs
+    string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")
 
     ExternalProject_Add(nccl_external
       SOURCE_DIR ${PROJECT_SOURCE_DIR}/third_party/nccl/nccl
@@ -21,7 +21,10 @@ if (NOT __NCCL_INCLUDED)
       CONFIGURE_COMMAND ""
       BUILD_COMMAND
         env
+        # TODO: remove these flags when
+        # https://github.com/pytorch/pytorch/issues/13362 is fixed
         "CCACHE_DISABLE=1"
+        "SCCACHE_DISABLE=1"
         make
         "CXX=${CMAKE_CXX_COMPILER}"
         "CUDA_HOME=${CUDA_TOOLKIT_ROOT_DIR}"
@@ -44,5 +47,4 @@ if (NOT __NCCL_INCLUDED)
     target_link_libraries(__caffe2_nccl INTERFACE ${NCCL_LIBRARIES})
     target_include_directories(__caffe2_nccl INTERFACE ${NCCL_INCLUDE_DIRS})
   endif()
-
 endif()

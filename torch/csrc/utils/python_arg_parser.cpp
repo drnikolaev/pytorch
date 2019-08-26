@@ -1,9 +1,10 @@
-#include "torch/csrc/utils/python_arg_parser.h"
+#include <torch/csrc/utils/python_arg_parser.h>
 
-#include "torch/csrc/Exceptions.h"
-#include "torch/csrc/Layout.h"
-#include "torch/csrc/utils/invalid_arguments.h"
-#include "torch/csrc/utils/python_strings.h"
+#include <torch/csrc/Exceptions.h>
+#include <torch/csrc/Layout.h>
+#include <torch/csrc/MemoryFormat.h>
+#include <torch/csrc/utils/invalid_arguments.h>
+#include <torch/csrc/utils/python_strings.h>
 
 #include <ATen/ATen.h>
 
@@ -21,22 +22,51 @@ static std::unordered_map<std::string, ParameterType> type_map = {
   {"int64_t", ParameterType::INT64},
   {"double", ParameterType::DOUBLE},
   {"TensorList", ParameterType::TENSOR_LIST},
-  {"IntList", ParameterType::INT_LIST},
+  {"IntArrayRef", ParameterType::INT_LIST},
   {"Generator", ParameterType::GENERATOR},
   {"bool", ParameterType::BOOL},
   {"Storage", ParameterType::STORAGE},
   {"PyObject*", ParameterType::PYOBJECT},
   {"ScalarType", ParameterType::SCALARTYPE},
-  {"optional<ScalarType>", ParameterType::SCALARTYPE},
   {"Layout", ParameterType::LAYOUT},
+  {"MemoryFormat", ParameterType::MEMORY_FORMAT},
+  {"QScheme", ParameterType::QSCHEME},
   {"Device", ParameterType::DEVICE},
   {"std::string", ParameterType::STRING},
+  {"Dimname", ParameterType::DIMNAME},
+  {"DimnameList", ParameterType::DIMNAME_LIST},
+};
+
+// Default arg name translations for compatibility with NumPy.
+//
+// Example:
+// ```python
+// t = torch.randn(10,10)
+// torch.sum(a=t, axis=0, keepdim=True)
+// ```
+//
+// A vector is necessary, because we might need to try multiple values.
+// In particular, NumPy sometimes uses "x" and sometimes "a" for the main input tensor.
+// Rather than annotate each function separately with whether it should take "x" or "a",
+// just try both.
+//
+// TODO: Allow individual functions to specify non-default translations:
+// For example, `torch.pow` should translate "exponent" to "x2".
+static const std::unordered_map<std::string, std::vector<std::string>> numpy_compatibility_arg_names = {
+  {"dim", {"axis"}},
+  {"keepdim", {"keepdims"}},
+  {"input", {"x", "a", "x1"}},
+  {"other", {"x2"}},
 };
 
 // TODO: remove this. This is a temporary list of functions that allow Python
 // numbers to bind to Tensors. Some binary ops have separate Tensor and Scalar
 // overloads and binding to the Tensor overload with a number of a different
 // type will trigger a type error.
+//
+// If you modify this, you will need to adjust the blacklist in
+// tools/pyi/gen_pyi.py (and add hardcoded signatures for these
+// functions.)
 static bool should_allow_numbers_as_tensors(const std::string& name) {
   static std::unordered_set<std::string> allowed = {
     "add", "add_", "add_out",
@@ -47,6 +77,7 @@ static bool should_allow_numbers_as_tensors(const std::string& name) {
   return allowed.find(name) != allowed.end();
 }
 
+// NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 FunctionParameter::FunctionParameter(const std::string& fmt, bool keyword_only)
   : optional(false)
   , allow_none(false)
@@ -90,11 +121,13 @@ FunctionParameter::FunctionParameter(const std::string& fmt, bool keyword_only)
   } else {
     name = name_str;
   }
-#if PY_MAJOR_VERSION == 2
-  python_name = PyString_InternFromString(name.c_str());
-#else
-  python_name = PyUnicode_InternFromString(name.c_str());
-#endif
+  python_name = THPUtils_internString(name);
+  auto np_compat_it = numpy_compatibility_arg_names.find(name);
+  if (np_compat_it != numpy_compatibility_arg_names.end()) {
+    for (const auto& str: np_compat_it->second) {
+      numpy_python_names.push_back(THPUtils_internString(str));
+    }
+  }
 }
 
 bool FunctionParameter::check(PyObject* obj) {
@@ -123,24 +156,36 @@ bool FunctionParameter::check(PyObject* obj) {
       }
       if (THPVariable_Check(obj)) {
         auto& var = ((THPVariable*)obj)->cdata;
-        return at::isIntegralType(var.type().scalarType()) && !var.requires_grad() && var.dim() == 0;
+        return at::isIntegralType(var.scalar_type(), /*includeBool=*/false) && !var.requires_grad() && var.dim() == 0;
       }
       return false;
     }
-    case ParameterType::TENSOR_LIST: return PyTuple_Check(obj) || PyList_Check(obj);
+#ifdef BUILD_NAMEDTENSOR
+    case ParameterType::DIMNAME: return THPUtils_checkDimname(obj);
+    case ParameterType::DIMNAME_LIST: {
+      if (THPUtils_checkDimnameList(obj)) {
+        return true;
+      }
+      // if a size is specified (e.g. DimnameList[1]) we also allow passing a single Dimname
+      return size == 1 && THPUtils_checkDimname(obj);
+    }
+#endif
+    case ParameterType::TENSOR_LIST: return six::isTuple(obj) || PyList_Check(obj);
     case ParameterType::INT_LIST: {
       if (PyTuple_Check(obj) || PyList_Check(obj)) {
         return true;
       }
-      // if a size is specified (e.g. IntList[2]) we also allow passing a single int
+      // if a size is specified (e.g. IntArrayRef[2]) we also allow passing a single int
       return size > 0 && THPUtils_checkLong(obj);
     }
     case ParameterType::GENERATOR: return THPGenerator_Check(obj);
     case ParameterType::BOOL: return PyBool_Check(obj);
     case ParameterType::STORAGE: return isStorage(obj);
     case ParameterType::PYOBJECT: return true;
-    case ParameterType::SCALARTYPE: return THPDtype_Check(obj);
+    case ParameterType::SCALARTYPE: return THPDtype_Check(obj) || THPPythonScalarType_Check(obj);
     case ParameterType::LAYOUT: return THPLayout_Check(obj);
+    case ParameterType::MEMORY_FORMAT: return THPMemoryFormat_Check(obj);
+    case ParameterType::QSCHEME: return THPQScheme_Check(obj);
     case ParameterType::DEVICE:
       return THPUtils_checkLong(obj) || THPUtils_checkString(obj) || THPDevice_Check(obj);
     case ParameterType::STRING: return THPUtils_checkString(obj);
@@ -162,8 +207,14 @@ std::string FunctionParameter::type_name() const {
     case ParameterType::PYOBJECT: return "object";
     case ParameterType::SCALARTYPE: return "torch.dtype";
     case ParameterType::LAYOUT: return "torch.layout";
+    case ParameterType::MEMORY_FORMAT: return "torch.memory_format";
+    case ParameterType::QSCHEME: return "torch.qscheme";
     case ParameterType::DEVICE: return "torch.device";
     case ParameterType::STRING: return "str";
+#ifdef BUILD_NAMEDTENSOR
+    case ParameterType::DIMNAME: return "name";
+    case ParameterType::DIMNAME_LIST: return "tuple of names";
+#endif
     default: throw std::runtime_error("unknown parameter type");
   }
 }
@@ -178,11 +229,11 @@ static inline c10::optional<int64_t> parse_as_integer(const std::string& s) {
 }
 
 /*
-Parse default value of IntList declared at native_functions.yaml
+Parse default value of IntArrayRef declared at native_functions.yaml
 
 There are two kinds of default values:
-1. IntList[2] x=1 (where size=2, value={1,1}
-2. IntList x={1,2,3} (where size=3, value={1,2,3}, note that there cannot be space after comma since native_parse.py uses ', ' to split args)
+1. IntArrayRef[2] x=1 (where size=2, value={1,1}
+2. IntArrayRef x={1,2,3} (where size=3, value={1,2,3}, note that there cannot be space after comma since native_parse.py uses ', ' to split args)
 */
 static inline std::vector<int64_t> parse_intlist_args(const std::string& s, int64_t size) {
   size_t n = s.size();
@@ -197,7 +248,7 @@ static inline std::vector<int64_t> parse_intlist_args(const std::string& s, int6
   // case 2. s is a list of dims (e.g., s={1,2})
 
   // since already checked left brace '{' above, here only checks right brace '}'
-  AT_CHECK(s[n - 1] == '}', "Default value of IntList is missing right brace '}', found ", s[n - 1]);
+  TORCH_CHECK(s[n - 1] == '}', "Default value of IntArrayRef is missing right brace '}', found ", s[n - 1]);
 
   auto args = std::vector<int64_t>();
   std::istringstream ss(s.substr(1, s.length() - 2)); // exclude '{' and '}'
@@ -285,7 +336,7 @@ FunctionSignature::FunctionSignature(const std::string& fmt)
   while (!done) {
     auto offset = fmt.find(", ", last_offset);
     if (offset == std::string::npos) {
-      offset = fmt.find(")", last_offset);
+      offset = fmt.find(')', last_offset);
       done = true;
       next_offset = offset + 1;
     } else {
@@ -428,8 +479,8 @@ bool FunctionSignature::parse(PyObject* args, PyObject* kwargs, PyObject* dst[],
   ssize_t arg_pos = 0;
   bool allow_varargs_intlist = false;
 
-  // if there is a single positional IntList argument, i.e. expand(..), view(...),
-  // allow a var-args style IntList, so expand(5,3) behaves as expand((5,3))
+  // if there is a single positional IntArrayRef argument, i.e. expand(..), view(...),
+  // allow a var-args style IntArrayRef, so expand(5,3) behaves as expand((5,3))
   if (max_pos_args == 1 && params[0].type_ == ParameterType::INT_LIST) {
     allow_varargs_intlist = true;
   }
@@ -447,7 +498,7 @@ bool FunctionSignature::parse(PyObject* args, PyObject* kwargs, PyObject* dst[],
     PyObject* obj = nullptr;
     bool is_kwd = false;
     if (arg_pos < nargs) {
-      // extra positional args given after single positional IntList arg
+      // extra positional args given after single positional IntArrayRef arg
       if (param.keyword_only) {
         if (raise_exception) {
           extra_args(*this, nargs);
@@ -457,6 +508,12 @@ bool FunctionSignature::parse(PyObject* args, PyObject* kwargs, PyObject* dst[],
       obj = PyTuple_GET_ITEM(args, arg_pos);
     } else if (kwargs) {
       obj = PyDict_GetItem(kwargs, param.python_name);
+      for (PyObject *numpy_name: param.numpy_python_names) {
+        if (obj) {
+          break;
+        }
+        obj = PyDict_GetItem(kwargs, numpy_name);
+      }
       is_kwd = true;
     }
 
@@ -519,7 +576,7 @@ PythonArgParser::PythonArgParser(std::vector<std::string> fmts, bool traceable)
  , traceable(traceable)
 {
   for (auto& fmt : fmts) {
-    signatures_.push_back(FunctionSignature(fmt));
+    signatures_.emplace_back(fmt);
   }
   for (auto& signature : signatures_) {
     if (signature.max_args > max_args) {
@@ -576,5 +633,54 @@ void PythonArgParser::print_error(PyObject* args, PyObject* kwargs, PyObject* pa
   throw TypeError("%s", msg.c_str());
 }
 
+at::Tensor PythonArgs::tensor_slow(int i) {
+  PyObject* obj = args[i];
+  if (!obj) {
+    return at::Tensor();
+  }
+  if (THPVariable_Check(obj)) {
+    return reinterpret_cast<THPVariable*>(obj)->cdata;
+  }
+
+  at::Scalar scalar;
+  if (THPUtils_checkLong(obj)) {
+    scalar = at::Scalar(THPUtils_unpackLong(obj));
+  } else if (THPUtils_checkDouble(obj)) {
+    scalar = at::Scalar(THPUtils_unpackDouble(obj));
+  } else {
+    // NB: Are you here because you passed None to a Variable method,
+    // and you expected an undefined tensor to be returned?   Don't add
+    // a test for Py_None here; instead, you need to mark the argument
+    // as *allowing none*; you can do this by writing 'Tensor?' instead
+    // of 'Tensor' in the ATen metadata.
+    throw TypeError("expected Tensor as argument %d, but got %s", i,
+        Py_TYPE(obj)->tp_name);
+  }
+  auto tensor = scalar_to_tensor(scalar);
+  tensor.unsafeGetTensorImpl()->set_wrapped_number(true);
+  return autograd::make_variable(tensor);
+}
+
+at::Scalar PythonArgs::scalar_slow(int i) {
+  if (traceable && jit::tracer::isTracing() && THPVariable_Check(args[i])) {
+    auto& var = THPVariable_Unpack(args[i]);
+    jit::tracer::ArgumentStash::stashValue(
+        signature.params[i].name, idx, var, jit::NumberType::get());
+  }
+
+  // Zero-dim tensors are converted to Scalars as-is. Note this doesn't currently
+  // handle most NumPy scalar types except np.float64.
+  if (THPVariable_Check(args[i])) {
+    return ((THPVariable*)args[i])->cdata.item();
+  }
+  if (THPUtils_checkLong(args[i])) {
+    return at::Scalar(static_cast<int64_t>(THPUtils_unpackLong(args[i])));
+  }
+
+  if (PyComplex_Check(args[i])) {
+    return at::Scalar(THPUtils_unpackComplexDouble(args[i]));
+  }
+  return at::Scalar(THPUtils_unpackDouble(args[i]));
+}
 
 } // namespace torch

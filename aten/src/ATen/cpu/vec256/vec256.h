@@ -1,11 +1,11 @@
 #pragma once
 
-#include "intrinsics.h"
+#include <ATen/cpu/vec256/intrinsics.h>
 
-#include "vec256_base.h"
-#include "vec256_float.h"
-#include "vec256_double.h"
-#include "vec256_int.h"
+#include <ATen/cpu/vec256/vec256_base.h>
+#include <ATen/cpu/vec256/vec256_float.h>
+#include <ATen/cpu/vec256/vec256_double.h>
+#include <ATen/cpu/vec256/vec256_int.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -15,14 +15,24 @@
 
 namespace at {
 namespace vec256 {
+
+// Note [Acceptable use of anonymous namespace in header]
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// Yes you saw right, this is an anonymous namespace in a header.  This header,
+// and all of its subheaders, REQUIRE their code to be entirely inlined into
+// the compilation unit that uses them.  It's important that these functions have
+// internal linkage so that kernels for different architectures don't get
+// combined during linking. It's sufficient to label functions "static", but
+// class methods must be an unnamed namespace to have internal linkage (since
+// static means something different in the context of classes).
 namespace {
 
 template <typename T>
 std::ostream& operator<<(std::ostream& stream, const Vec256<T>& vec) {
-  T buf[Vec256<T>::size];
+  T buf[Vec256<T>::size()];
   vec.store(buf);
   stream << "vec[";
-  for (int i = 0; i != Vec256<T>::size; i++) {
+  for (int i = 0; i != Vec256<T>::size(); i++) {
     if (i != 0) {
       stream << ", ";
     }
@@ -38,12 +48,12 @@ std::ostream& operator<<(std::ostream& stream, const Vec256<T>& vec) {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ CAST (AVX) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 template<>
-Vec256<float> cast<float, double>(const Vec256<double>& src) {
+inline Vec256<float> cast<float, double>(const Vec256<double>& src) {
   return _mm256_castpd_ps(src);
 }
 
 template<>
-Vec256<double> cast<double, float>(const Vec256<float>& src) {
+inline Vec256<double> cast<double, float>(const Vec256<float>& src) {
   return _mm256_castps_pd(src);
 }
 
@@ -53,11 +63,11 @@ Vec256<double> cast<double, float>(const Vec256<float>& src) {
 
 #define DEFINE_FLOAT_INT_CAST(int_t, float_t, float_ch)            \
 template<>                                                         \
-Vec256<int_t> cast<int_t, float_t>(const Vec256<float_t>& src) {   \
+inline  Vec256<int_t> cast<int_t, float_t>(const Vec256<float_t>& src) {   \
   return _mm256_castp ## float_ch ## _si256(src);                  \
 }                                                                  \
 template<>                                                         \
-Vec256<float_t> cast<float_t, int_t>(const Vec256<int_t>& src) {   \
+inline Vec256<float_t> cast<float_t, int_t>(const Vec256<int_t>& src) {   \
   return _mm256_castsi256_p ## float_ch (src);                     \
 }
 

@@ -3,25 +3,30 @@
 #include <array>
 #include <cstdint>
 #include <c10/macros/Macros.h>
-#include <ATen/cuda/Array.h>
+#include <ATen/core/Array.h>
 #include <THC/THCIntegerDivider.cuh>
 
 /// OffsetCalculator calculates the offset in bytes of a linear index for NARGS
 /// operands that share the same shape, but may have different strides.
 
-template <int NARGS>
-struct OffsetCalculator {
-  static constexpr int MAX_DIMS = 25;
+#ifdef __HIP_PLATFORM_HCC__
+constexpr int MAX_DIMS = 16;
+#else
+constexpr int MAX_DIMS = 25;
+#endif
 
+template <int NARGS, typename index_t = uint32_t>
+struct OffsetCalculator {
   // The offset for each argument (in bytes). Wrapper around fixed-size array.
-  using offset_type = at::cuda::Array<uint32_t, NARGS>;
+  using offset_type = at::detail::Array<index_t, NARGS>;
 
   OffsetCalculator(int dims, const int64_t* sizes, const int64_t* const* strides) : dims(dims) {
+    TORCH_CHECK(dims <= MAX_DIMS, "tensor has too many (>", MAX_DIMS, ") dims");
     for (int i = 0; i < MAX_DIMS; ++i) {
       if (i < dims) {
-        sizes_[i] = IntDivider<uint32_t>(sizes[i]);
+        sizes_[i] = IntDivider<index_t>(sizes[i]);
       } else {
-        sizes_[i] = IntDivider<uint32_t>(1);
+        sizes_[i] = IntDivider<index_t>(1);
       }
       for (int arg = 0; arg < NARGS; arg++) {
         strides_[i][arg] =  i < dims ? strides[arg][i] : 0;
@@ -29,7 +34,7 @@ struct OffsetCalculator {
     }
   }
 
-  C10_HOST_DEVICE offset_type get(uint32_t linear_idx) const {
+  C10_HOST_DEVICE offset_type get(index_t linear_idx) const {
     offset_type offsets;
     #pragma unroll
     for (int arg = 0; arg < NARGS; arg++) {
@@ -54,6 +59,6 @@ struct OffsetCalculator {
   }
 
   int dims;
-  IntDivider<uint32_t> sizes_[MAX_DIMS];
-  uint32_t strides_[MAX_DIMS][NARGS];
+  IntDivider<index_t> sizes_[MAX_DIMS];
+  index_t strides_[MAX_DIMS][NARGS];
 };
